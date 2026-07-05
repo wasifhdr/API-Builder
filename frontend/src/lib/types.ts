@@ -1,4 +1,5 @@
 export type UserRole = 'user' | 'admin'
+export type PlanTier = 'free' | 'pro' | 'max'
 
 export interface UserSettings {
   use_saved_logins?: boolean
@@ -13,4 +14,7 @@ export interface User {
   role: UserRole
   settings: UserSettings
   created_at: string
+  tier: PlanTier
+  quota_used_today: number
+  quota_limit: number | null
 }

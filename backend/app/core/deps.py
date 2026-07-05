@@ -1,9 +1,13 @@
 import uuid
+from dataclasses import dataclass
+from datetime import datetime, timezone
 
 from fastapi import Cookie, Depends, HTTPException
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
+from app.models.billing import PlanTier, Subscription, SubscriptionStatus
 from app.models.user import User, UserRole
 from app.redis import redis_client
 
@@ -38,3 +42,30 @@ async def require_admin(user: User = Depends(current_user)) -> User:
     if user.role != UserRole.ADMIN:
         raise HTTPException(status_code=403, detail="admin only")
     return user
+
+
+async def get_effective_tier(user_id: uuid.UUID, db: AsyncSession) -> PlanTier:
+    now = datetime.now(timezone.utc)
+    result = await db.execute(
+        select(Subscription).where(
+            Subscription.user_id == user_id,
+            Subscription.status == SubscriptionStatus.ACTIVE,
+            Subscription.expires_at > now,
+        )
+    )
+    sub = result.scalar_one_or_none()
+    return sub.tier if sub else PlanTier.FREE
+
+
+@dataclass
+class UserWithTier:
+    user: User
+    tier: PlanTier
+
+
+async def current_user_with_tier(
+    user: User = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+) -> UserWithTier:
+    tier = await get_effective_tier(user.id, db)
+    return UserWithTier(user=user, tier=tier)

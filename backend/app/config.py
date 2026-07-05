@@ -20,6 +20,10 @@ class Settings(BaseSettings):
     oauth_redirect_uri: str
     admin_emails: str = ""
 
+    plan_price_pro_bdt: int = 100
+    plan_price_max_bdt: int = 500
+    quota_tz: str = "Asia/Dhaka"
+
     @property
     def admin_email_set(self) -> set[str]:
         return {e.strip().lower() for e in self.admin_emails.split(",") if e.strip()}

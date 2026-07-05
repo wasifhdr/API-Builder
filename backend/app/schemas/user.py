@@ -4,6 +4,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
+from app.models.billing import PlanTier
 from app.models.user import UserRole
 
 
@@ -17,6 +18,12 @@ class UserOut(BaseModel):
     role: UserRole
     settings: dict
     created_at: datetime
+
+
+class MeOut(UserOut):
+    tier: PlanTier
+    quota_used_today: int
+    quota_limit: int | None
 
 
 class SettingsUpdate(BaseModel):

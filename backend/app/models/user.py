@@ -3,7 +3,7 @@ import uuid
 
 from sqlalchemy import String, Text, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, TimestampMixin, enum_column
 
@@ -23,3 +23,6 @@ class User(Base, TimestampMixin):
     picture_url: Mapped[str | None] = mapped_column(Text)
     role: Mapped[UserRole] = mapped_column(enum_column(UserRole), default=UserRole.USER)
     settings: Mapped[dict] = mapped_column(JSONB, default=dict, server_default=text("'{}'::jsonb"))
+
+    workflows: Mapped[list["Workflow"]] = relationship(back_populates="owner")  # noqa: F821
+    apis: Mapped[list["CustomApi"]] = relationship(back_populates="owner")  # noqa: F821
