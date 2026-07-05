@@ -15,6 +15,15 @@ class Settings(BaseSettings):
     redis_url: str
     frontend_origin: str = "http://localhost:3000"
 
+    google_client_id: str
+    google_client_secret: str
+    oauth_redirect_uri: str
+    admin_emails: str = ""
+
+    @property
+    def admin_email_set(self) -> set[str]:
+        return {e.strip().lower() for e in self.admin_emails.split(",") if e.strip()}
+
 
 @lru_cache
 def get_settings() -> Settings:

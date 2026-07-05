@@ -17,6 +17,7 @@ dependencies = [
     "playwright>=1.61.0",
     "pydantic-settings>=2.14.2",
     "redis>=8.0.1",
+    "requests>=2.34.2",
     "sqlalchemy[asyncio]>=2.0.51",
     "uvicorn[standard]>=0.50.0",
 ]

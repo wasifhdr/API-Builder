@@ -1017,8 +1017,11 @@ FAILURES_DIR=./data/failures
 `pg_isready`) + `redis:7-alpine` (`--appendonly yes`). Nothing else.
 
 Backend deps (`uv`, Python 3.12): fastapi, uvicorn[standard], sqlalchemy[asyncio], asyncpg,
-alembic, pydantic-settings, redis, playwright, openai, httpx, google-auth, cryptography,
+alembic, pydantic-settings, redis, playwright, openai, httpx, google-auth, requests, cryptography,
 openapi-spec-validator, genson. Dev: pytest, pytest-asyncio, ruff.
+
+`requests` isn't used directly — `google-auth`'s ID-token verification (`google.auth.transport.requests`)
+requires it as its default HTTP transport for fetching Google's signing certs.
 
 ---
 
