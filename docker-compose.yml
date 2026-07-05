@@ -1,0 +1,40 @@
+# Host ports are remapped off the defaults (5432/6379): on this dev machine,
+# something (likely AV/EDR "known database port" protection) silently refuses
+# new listeners on 5432, 5433, and 6379 specifically, even with nothing else
+# bound to them — confirmed the block is pattern-based, not a general Docker
+# networking bug (arbitrary ports like 25432 bind fine). Containers still use
+# their standard ports internally; only the host mapping changed. Keep
+# DATABASE_URL/REDIS_URL in .env in sync with these.
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: apibuilder
+      POSTGRES_PASSWORD: apibuilder
+      POSTGRES_DB: apibuilder
+    ports:
+      - "127.0.0.1:25432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U apibuilder -d apibuilder"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "127.0.0.1:25379:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  pgdata:
+  redisdata:
