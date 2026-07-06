@@ -13,7 +13,29 @@ import {
 } from '../components/ui'
 import { useSession } from '../hooks/useSession'
 import { api } from '../lib/api'
-import type { CustomApi } from '../lib/types'
+import type { CustomApi, WorkflowSummary } from '../lib/types'
+
+const WORKFLOW_STATUS_LABEL: Record<WorkflowSummary['status'], string> = {
+  recording: 'Recording…',
+  draft: 'Draft',
+  ready: 'Ready to publish',
+  archived: 'Archived',
+}
+
+function WorkflowCard({ item }: { item: WorkflowSummary }) {
+  const href = item.status === 'recording' ? `/recorder/${item.id}` : `/workflows/${item.id}/edit`
+  return (
+    <Link to={href} className={cardClasses({ variant: 'standard', clickable: true })}>
+      <div className="flex items-start justify-between gap-3">
+        <h3 className="text-h2">{item.name}</h3>
+        <Badge variant={item.status === 'ready' ? 'success' : 'pending'} pulse={item.status === 'recording'}>
+          {WORKFLOW_STATUS_LABEL[item.status]}
+        </Badge>
+      </div>
+      <p className="mt-1 truncate text-sm text-ink/60">{item.start_url}</p>
+    </Link>
+  )
+}
 
 function ApiCard({ item, shared }: { item: CustomApi; shared?: boolean }) {
   return (
@@ -38,10 +60,12 @@ function ApiCard({ item, shared }: { item: CustomApi; shared?: boolean }) {
 export default function Dashboard() {
   const { user } = useSession()
   const [apis, setApis] = useState<CustomApi[]>([])
+  const [workflows, setWorkflows] = useState<WorkflowSummary[]>([])
 
   useEffect(() => {
     if (!user) return
     api.get<CustomApi[]>('/apis').then(setApis).catch(() => undefined)
+    api.get<WorkflowSummary[]>('/workflows').then(setWorkflows).catch(() => undefined)
   }, [user])
 
   if (!user) return null
@@ -68,6 +92,17 @@ export default function Dashboard() {
         </CapsLabel>
         <QuotaCells used={user.quota_used_today} limit={user.quota_limit} />
       </div>
+
+      {workflows.length > 0 && (
+        <section className="mb-8">
+          <h2 className="text-h2 mb-3">Drafts</h2>
+          <div className="grid gap-5 md:grid-cols-2 lg:grid-cols-3">
+            {workflows.map((w) => (
+              <WorkflowCard key={w.id} item={w} />
+            ))}
+          </div>
+        </section>
+      )}
 
       <section className="mb-8">
         <h2 className="text-h2 mb-3">My APIs</h2>

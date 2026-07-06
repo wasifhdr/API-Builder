@@ -4,6 +4,7 @@ import AppShell from '../components/AppShell'
 import ExtractionEditor from '../components/ExtractionEditor'
 import { Badge, type BadgeVariant, Button, buttonClasses, cardClasses, StatChip } from '../components/ui'
 import { useRecorder } from '../hooks/useRecorder'
+import { api, ApiError } from '../lib/api'
 import { describeStep } from '../lib/steps'
 import type { ExtractionConfig, RecorderStatus, Step } from '../lib/types'
 
@@ -61,6 +62,23 @@ export default function RecorderSession() {
   const [extraction, setExtractionState] = useState<ExtractionConfig>(EMPTY_EXTRACTION)
   const [paramFormFor, setParamFormFor] = useState<number | null>(null)
   const [paramName, setParamName] = useState('')
+  const [deleting, setDeleting] = useState(false)
+  const [confirmingDelete, setConfirmingDelete] = useState(false)
+  const [deleteError, setDeleteError] = useState<string | null>(null)
+
+  async function deleteWorkflow() {
+    setDeleting(true)
+    setDeleteError(null)
+    try {
+      await api.delete(`/workflows/${workflowId}`)
+      navigate('/dashboard')
+    } catch (err) {
+      setDeleteError(err instanceof ApiError ? err.message : 'Failed to delete')
+      setConfirmingDelete(false)
+    } finally {
+      setDeleting(false)
+    }
+  }
 
   function updateExtraction(next: ExtractionConfig) {
     setExtractionState(next)
@@ -131,6 +149,32 @@ export default function RecorderSession() {
           <p className="text-sm text-ink/80">{w}</p>
         </div>
       ))}
+
+      {!interactive && (
+        <div className={`${cardClasses({ variant: 'callout', accent: 'gold' })} mb-4 flex flex-wrap items-center justify-between gap-3`}>
+          <p className="text-sm text-ink/80">
+            {status === 'died'
+              ? "This session isn't responding. You can delete it and start over."
+              : 'Stuck waiting? You can delete this workflow instead of waiting.'}
+          </p>
+          {deleteError && <p className="w-full text-sm font-medium text-red-deep">{deleteError}</p>}
+          {confirmingDelete ? (
+            <div className="flex items-center gap-2">
+              <span className="text-sm text-ink/70">Delete this workflow?</span>
+              <Button variant="danger-ghost" size="sm" onClick={deleteWorkflow} disabled={deleting}>
+                {deleting ? 'Deleting…' : 'Confirm delete'}
+              </Button>
+              <Button variant="ghost" size="sm" onClick={() => setConfirmingDelete(false)} disabled={deleting}>
+                Cancel
+              </Button>
+            </div>
+          ) : (
+            <Button variant="danger-ghost" size="sm" onClick={() => setConfirmingDelete(true)}>
+              Delete workflow
+            </Button>
+          )}
+        </div>
+      )}
 
       <div className="mb-4 flex items-center gap-2">
         <Button

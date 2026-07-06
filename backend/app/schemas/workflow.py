@@ -7,6 +7,17 @@ from pydantic import BaseModel, ConfigDict
 from app.models.workflow import WorkflowStatus
 
 
+class WorkflowListItem(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    name: str
+    start_url: str
+    status: WorkflowStatus
+    created_at: datetime
+    updated_at: datetime
+
+
 class WorkflowOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

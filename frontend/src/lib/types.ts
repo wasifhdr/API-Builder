@@ -43,6 +43,17 @@ export interface ExtractionConfig {
   fields: ExtractionField[]
 }
 
+export type WorkflowStatus = 'recording' | 'draft' | 'ready' | 'archived'
+
+export interface WorkflowSummary {
+  id: string
+  name: string
+  start_url: string
+  status: WorkflowStatus
+  created_at: string
+  updated_at: string
+}
+
 export type SpecStatus = 'pending' | 'generating' | 'ready' | 'failed'
 export type ExecutionStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'timeout'
 

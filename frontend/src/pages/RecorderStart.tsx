@@ -11,14 +11,29 @@ export default function RecorderStart() {
   const [error, setError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
 
+  function normalizeUrl(value: string): string {
+    const trimmed = value.trim()
+    return trimmed && !/^https?:\/\//i.test(trimmed) ? `https://${trimmed}` : trimmed
+  }
+
   async function handleSubmit(e: FormEvent) {
     e.preventDefault()
     setError(null)
+
+    const normalizedUrl = normalizeUrl(startUrl)
+    try {
+      new URL(normalizedUrl)
+    } catch {
+      setError('Please enter a valid URL')
+      return
+    }
+    setStartUrl(normalizedUrl)
+
     setSubmitting(true)
     try {
       const { workflow_id } = await api.post<{ workflow_id: string }>('/recordings', {
         name,
-        start_url: startUrl,
+        start_url: normalizedUrl,
       })
       navigate(`/recorder/${workflow_id}`)
     } catch (err) {
@@ -59,10 +74,11 @@ export default function RecorderStart() {
               <FieldLabel htmlFor="wf-url">Starting URL</FieldLabel>
               <Input
                 id="wf-url"
-                type="url"
+                type="text"
                 required
                 value={startUrl}
                 onChange={(e) => setStartUrl(e.target.value)}
+                onBlur={() => setStartUrl((v) => normalizeUrl(v))}
                 placeholder="https://example.com"
               />
             </div>

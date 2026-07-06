@@ -18,7 +18,7 @@ import {
   Th,
   Tr,
 } from '../components/ui'
-import { api } from '../lib/api'
+import { api, ApiError } from '../lib/api'
 import { describeStep } from '../lib/steps'
 import type { ExtractionConfig, Parameter, Step } from '../lib/types'
 
@@ -43,6 +43,8 @@ export default function WorkflowEditor() {
   const [extraction, setExtraction] = useState<ExtractionConfig>(EMPTY_EXTRACTION)
   const [saving, setSaving] = useState(false)
   const [publishing, setPublishing] = useState(false)
+  const [deleting, setDeleting] = useState(false)
+  const [confirmingDelete, setConfirmingDelete] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [saveMessage, setSaveMessage] = useState<string | null>(null)
 
@@ -77,6 +79,20 @@ export default function WorkflowEditor() {
       setError(err instanceof Error ? err.message : 'Failed to save')
     } finally {
       setSaving(false)
+    }
+  }
+
+  async function handleDelete() {
+    setDeleting(true)
+    setError(null)
+    try {
+      await api.delete(`/workflows/${workflowId}`)
+      navigate('/dashboard')
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Failed to delete')
+      setConfirmingDelete(false)
+    } finally {
+      setDeleting(false)
     }
   }
 
@@ -208,6 +224,21 @@ export default function WorkflowEditor() {
         {workflow.status === 'ready' && (
           <Button variant="ink" onClick={handlePublish} disabled={publishing}>
             {publishing ? 'Publishing…' : 'Publish as API'}
+          </Button>
+        )}
+        {confirmingDelete ? (
+          <div className="ml-auto flex items-center gap-2">
+            <span className="text-sm text-ink/70">Delete this workflow? This can&apos;t be undone.</span>
+            <Button variant="danger-ghost" onClick={handleDelete} disabled={deleting}>
+              {deleting ? 'Deleting…' : 'Confirm delete'}
+            </Button>
+            <Button variant="ghost" onClick={() => setConfirmingDelete(false)} disabled={deleting}>
+              Cancel
+            </Button>
+          </div>
+        ) : (
+          <Button variant="danger-ghost" className="ml-auto" onClick={() => setConfirmingDelete(true)}>
+            Delete workflow
           </Button>
         )}
       </div>
