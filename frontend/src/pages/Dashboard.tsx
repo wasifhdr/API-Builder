@@ -93,17 +93,6 @@ export default function Dashboard() {
         <QuotaCells used={user.quota_used_today} limit={user.quota_limit} />
       </div>
 
-      {workflows.length > 0 && (
-        <section className="mb-8">
-          <h2 className="text-h2 mb-3">Drafts</h2>
-          <div className="grid gap-5 md:grid-cols-2 lg:grid-cols-3">
-            {workflows.map((w) => (
-              <WorkflowCard key={w.id} item={w} />
-            ))}
-          </div>
-        </section>
-      )}
-
       <section className="mb-8">
         <h2 className="text-h2 mb-3">My APIs</h2>
         {ownedApis.length === 0 ? (
@@ -128,6 +117,17 @@ export default function Dashboard() {
           </div>
         )}
       </section>
+
+      {workflows.length > 0 && (
+        <section className="mb-8">
+          <h2 className="text-h2 mb-3">Drafts</h2>
+          <div className="grid gap-5 md:grid-cols-2 lg:grid-cols-3">
+            {workflows.map((w) => (
+              <WorkflowCard key={w.id} item={w} />
+            ))}
+          </div>
+        </section>
+      )}
 
       {sharedApis.length > 0 && (
         <section>
