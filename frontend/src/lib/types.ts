@@ -236,3 +236,11 @@ export interface ApiStats {
   top_consumers: ApiStatsConsumer[]
   last_called_at: string | null
 }
+
+export interface Session {
+  sid_prefix: string
+  created_at: string
+  user_agent: string | null
+  ip: string | null
+  current: boolean
+}

@@ -61,3 +61,32 @@ class ClaimUsernameRequest(BaseModel):
 
 class UsernameAvailableOut(BaseModel):
     available: bool
+
+
+class ProfileUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str | None = None
+    phone: str | None = None
+
+
+class PasswordSetRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    current_password: str | None = None
+    new_password: str
+
+
+class SessionOut(BaseModel):
+    sid_prefix: str
+    created_at: datetime
+    user_agent: str | None
+    ip: str | None
+    current: bool
+
+
+class DeleteAccountRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    confirm_username: str
+    current_password: str | None = None
