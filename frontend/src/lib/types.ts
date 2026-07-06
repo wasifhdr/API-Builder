@@ -200,3 +200,11 @@ export interface RegisterPayload {
   username: string
   password: string
 }
+
+export interface Session {
+  sid_prefix: string
+  created_at: string
+  user_agent: string | null
+  ip: string | null
+  current: boolean
+}

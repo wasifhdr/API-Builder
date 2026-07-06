@@ -7,6 +7,7 @@ const NAV_LINKS = [
   { to: '/dashboard', label: 'Dashboard' },
   { to: '/keys', label: 'API Keys' },
   { to: '/billing', label: 'Billing' },
+  { to: '/profile', label: 'Profile' },
   { to: '/settings', label: 'Settings' },
 ]
 

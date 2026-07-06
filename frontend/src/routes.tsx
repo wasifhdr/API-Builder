@@ -13,6 +13,7 @@ import Dashboard from './pages/Dashboard'
 import InviteAccept from './pages/InviteAccept'
 import Keys from './pages/Keys'
 import Landing from './pages/Landing'
+import Profile from './pages/Profile'
 import RecorderSession from './pages/RecorderSession'
 import RecorderStart from './pages/RecorderStart'
 import Settings from './pages/Settings'
@@ -69,6 +70,14 @@ export default function AppRoutes() {
         element={
           <RequireAuth>
             <Settings />
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/profile"
+        element={
+          <RequireAuth>
+            <Profile />
           </RequireAuth>
         }
       />
