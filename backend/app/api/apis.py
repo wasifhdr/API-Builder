@@ -1,20 +1,29 @@
 import json
 import secrets
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select
+from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.core.deps import current_user, get_effective_tier
 from app.db import get_db
 from app.models.api import ApiAccessGrant, ApiInvite, ApiVisibility, CustomApi, SpecStatus
 from app.models.billing import PlanTier
-from app.models.execution import ApiExecution
-from app.models.user import User
+from app.models.execution import ApiExecution, ExecutionStatus
+from app.models.user import User, UserRole
 from app.redis import redis_client
-from app.schemas.api import ApiExecutionOut, CustomApiOut, CustomApiUpdate
+from app.schemas.api import (
+    ApiExecutionOut,
+    ApiStatsConsumerOut,
+    ApiStatsDayOut,
+    ApiStatsOut,
+    CustomApiOut,
+    CustomApiUpdate,
+)
 from app.schemas.invite import CreateInviteRequest, GrantOut, InviteOut
 from app.services.grants import has_access
 
@@ -205,3 +214,117 @@ async def revoke_grant(
         raise HTTPException(status_code=404, detail="grant not found")
     grant.revoked_at = datetime.now(timezone.utc)
     await db.commit()
+
+
+async def _get_owned_api_or_super_admin(api_id: uuid.UUID, user: User, db: AsyncSession) -> CustomApi:
+    api = await db.get(CustomApi, api_id)
+    if api is None:
+        raise HTTPException(status_code=404, detail="api not found")
+    if api.owner_id != user.id and user.role != UserRole.SUPER_ADMIN:
+        raise HTTPException(status_code=404, detail="api not found")
+    return api
+
+
+def _dhaka_day(column):
+    """Truncates a UTC timestamp column to its Asia/Dhaka calendar day."""
+    return func.date_trunc("day", func.timezone(settings.quota_tz, column))
+
+
+@router.get("/{api_id}/stats", response_model=ApiStatsOut)
+async def get_api_stats(
+    api_id: uuid.UUID,
+    user: User = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+) -> ApiStatsOut:
+    api = await _get_owned_api_or_super_admin(api_id, user, db)
+    now = datetime.now(timezone.utc)
+    window_7d_start = now - timedelta(days=7)
+    window_30d_start = now - timedelta(days=30)
+    tz = ZoneInfo(settings.quota_tz)
+    today_dhaka = now.astimezone(tz).date()
+    first_day_dhaka = today_dhaka - timedelta(days=13)
+
+    lifetime_row = (
+        await db.execute(
+            select(
+                func.count().label("total_calls"),
+                func.max(ApiExecution.created_at).label("last_called_at"),
+            ).where(ApiExecution.api_id == api.id)
+        )
+    ).one()
+
+    window_row = (
+        await db.execute(
+            select(
+                func.count().label("calls_7d"),
+                func.count(case((ApiExecution.status == ExecutionStatus.SUCCEEDED, 1))).label("succeeded_7d"),
+                func.avg(case((ApiExecution.duration_ms.is_not(None), ApiExecution.duration_ms))).label(
+                    "avg_duration_ms_7d"
+                ),
+                func.count(case((ApiExecution.cache_hit.is_(True), 1))).label("cache_hits_7d"),
+            ).where(ApiExecution.api_id == api.id, ApiExecution.created_at >= window_7d_start)
+        )
+    ).one()
+
+    calls_7d = window_row.calls_7d or 0
+    succeeded_7d = window_row.succeeded_7d or 0
+    cache_hits_7d = window_row.cache_hits_7d or 0
+    success_rate_7d = (succeeded_7d / calls_7d) if calls_7d else 0.0
+    cache_hit_rate_7d = (cache_hits_7d / calls_7d) if calls_7d else 0.0
+    avg_duration_ms_7d = float(window_row.avg_duration_ms_7d) if window_row.avg_duration_ms_7d is not None else None
+
+    day_bucket = _dhaka_day(ApiExecution.created_at)
+    day_rows = (
+        await db.execute(
+            select(
+                day_bucket.label("day"),
+                func.count().label("total"),
+                func.count(case((ApiExecution.status == ExecutionStatus.SUCCEEDED, 1))).label("succeeded"),
+            )
+            .where(
+                ApiExecution.api_id == api.id,
+                ApiExecution.created_at >= datetime(
+                    first_day_dhaka.year, first_day_dhaka.month, first_day_dhaka.day, tzinfo=tz
+                ),
+            )
+            .group_by(day_bucket)
+        )
+    ).all()
+    by_day = {row.day.date(): (row.total, row.succeeded) for row in day_rows}
+
+    calls_by_day: list[ApiStatsDayOut] = []
+    for offset in range(14):
+        day = first_day_dhaka + timedelta(days=offset)
+        total, succeeded = by_day.get(day, (0, 0))
+        calls_by_day.append(ApiStatsDayOut(date=day.isoformat(), total=total, succeeded=succeeded))
+
+    consumer_name = func.coalesce(User.username, User.email).label("name")
+    consumer_rows = (
+        await db.execute(
+            select(consumer_name, func.count().label("calls_30d"))
+            .select_from(ApiExecution)
+            .join(User, User.id == ApiExecution.caller_user_id)
+            .where(
+                ApiExecution.api_id == api.id,
+                ApiExecution.caller_user_id.is_not(None),
+                ApiExecution.created_at >= window_30d_start,
+            )
+            .group_by(consumer_name)
+            .order_by(func.count().desc())
+            .limit(5)
+        )
+    ).all()
+    top_consumers = [
+        ApiStatsConsumerOut(name=row.name, calls_30d=row.calls_30d) for row in consumer_rows
+    ]
+
+    return ApiStatsOut(
+        total_calls=lifetime_row.total_calls or 0,
+        calls_7d=calls_7d,
+        success_rate_7d=success_rate_7d,
+        avg_duration_ms_7d=avg_duration_ms_7d,
+        cache_hit_rate_7d=cache_hit_rate_7d,
+        calls_by_day=calls_by_day,
+        top_consumers=top_consumers,
+        last_called_at=lifetime_row.last_called_at,
+    )

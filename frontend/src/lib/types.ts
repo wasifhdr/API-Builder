@@ -200,3 +200,25 @@ export interface RegisterPayload {
   username: string
   password: string
 }
+
+export interface ApiStatsDay {
+  date: string
+  total: number
+  succeeded: number
+}
+
+export interface ApiStatsConsumer {
+  name: string
+  calls_30d: number
+}
+
+export interface ApiStats {
+  total_calls: number
+  calls_7d: number
+  success_rate_7d: number
+  avg_duration_ms_7d: number | null
+  cache_hit_rate_7d: number
+  calls_by_day: ApiStatsDay[]
+  top_consumers: ApiStatsConsumer[]
+  last_called_at: string | null
+}

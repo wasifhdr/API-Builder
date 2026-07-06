@@ -10,10 +10,12 @@ import {
   cardClasses,
   CodeBlock,
   EmptyRow,
+  EmptyState,
   FieldLabel,
   InlineCode,
   Input,
   PageHeader,
+  StatChip,
   Table,
   TableWrapper,
   Td,
@@ -22,7 +24,15 @@ import {
 } from '../components/ui'
 import { useSession } from '../hooks/useSession'
 import { ApiError, api } from '../lib/api'
-import type { ApiExecution, CustomApi, ExecutionStatus, Grant, Invite, SpecStatus } from '../lib/types'
+import type {
+  ApiExecution,
+  ApiStats,
+  CustomApi,
+  ExecutionStatus,
+  Grant,
+  Invite,
+  SpecStatus,
+} from '../lib/types'
 
 const SPEC_BADGE: Record<SpecStatus, BadgeVariant> = {
   pending: 'neutral',
@@ -50,6 +60,9 @@ export default function ApiDetail() {
   const [priceInput, setPriceInput] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [saveMessage, setSaveMessage] = useState<string | null>(null)
+  const [stats, setStats] = useState<ApiStats | null>(null)
+  const [statsError, setStatsError] = useState<string | null>(null)
+  const [statsLoading, setStatsLoading] = useState(true)
 
   const isOwner = !!user && !!customApi && customApi.owner_id === user.id
 
@@ -67,7 +80,18 @@ export default function ApiDetail() {
     api.get<Grant[]>(`/apis/${apiId}/grants`).then(setGrants).catch(() => undefined)
   }
 
+  function loadStats() {
+    setStatsLoading(true)
+    setStatsError(null)
+    api
+      .get<ApiStats>(`/apis/${apiId}/stats`)
+      .then(setStats)
+      .catch((err) => setStatsError(err instanceof ApiError ? err.message : 'Failed to load stats'))
+      .finally(() => setStatsLoading(false))
+  }
+
   useEffect(load, [apiId])
+  useEffect(loadStats, [apiId])
 
   async function toggleActive() {
     if (!customApi) return
@@ -322,6 +346,94 @@ export default function ApiDetail() {
               )}
             </section>
           )}
+
+          <section className="mb-8">
+            <h2 className="text-h2 mb-3">Stats</h2>
+            {statsLoading && <p className="text-sm text-ink/60">Loading…</p>}
+            {statsError && <p className="text-sm font-medium text-red-deep">{statsError}</p>}
+            {!statsLoading && !statsError && stats && stats.total_calls === 0 && (
+              <EmptyState
+                statement={<>No calls <span className="text-orange">yet.</span></>}
+                description="Once callers start hitting this API, usage stats will show up here."
+              />
+            )}
+            {!statsLoading && !statsError && stats && stats.total_calls > 0 && (
+              <div className="space-y-5">
+                <div className="flex flex-wrap gap-3">
+                  <StatChip value={stats.total_calls} label="total calls" />
+                  <StatChip value={stats.calls_7d} label="calls last 7d" />
+                  <StatChip value={`${Math.round(stats.success_rate_7d * 100)}%`} label="success rate (7d)" />
+                  <StatChip
+                    value={stats.avg_duration_ms_7d != null ? `${Math.round(stats.avg_duration_ms_7d)}ms` : '—'}
+                    label="avg duration (7d)"
+                  />
+                  <StatChip value={`${Math.round(stats.cache_hit_rate_7d * 100)}%`} label="cache hit rate (7d)" />
+                </div>
+
+                <div className={cardClasses({ variant: 'quiet' })}>
+                  <CapsLabel tone="muted" className="mb-3">
+                    Calls per day (last 14 days)
+                  </CapsLabel>
+                  <div className="flex h-28 items-end gap-1.5">
+                    {stats.calls_by_day.map((day) => {
+                      const max = Math.max(...stats.calls_by_day.map((d) => d.total), 1)
+                      const failed = day.total - day.succeeded
+                      const succeededPct = (day.succeeded / max) * 100
+                      const failedPct = (failed / max) * 100
+                      return (
+                        <div
+                          key={day.date}
+                          className="flex flex-1 flex-col items-center gap-1"
+                          title={`${day.date}: ${day.total} calls, ${day.succeeded} succeeded`}
+                        >
+                          <div className="flex h-24 w-full flex-col-reverse rounded-dot bg-cream">
+                            {day.total > 0 && (
+                              <>
+                                <div className="w-full rounded-t-dot bg-green" style={{ height: `${succeededPct}%` }} />
+                                {failed > 0 && <div className="w-full bg-red" style={{ height: `${failedPct}%` }} />}
+                              </>
+                            )}
+                          </div>
+                          <span className="text-[10px] text-ink/45">{day.date.slice(5)}</span>
+                        </div>
+                      )
+                    })}
+                  </div>
+                </div>
+
+                <div>
+                  <CapsLabel tone="muted" className="mb-2">
+                    Top consumers (30d)
+                  </CapsLabel>
+                  <TableWrapper>
+                    <Table>
+                      <thead>
+                        <tr>
+                          <Th>Consumer</Th>
+                          <Th>Calls (30d)</Th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {stats.top_consumers.length === 0 && <EmptyRow colSpan={2}>No consumers yet.</EmptyRow>}
+                        {stats.top_consumers.map((c) => (
+                          <Tr key={c.name}>
+                            <Td mono>{c.name}</Td>
+                            <Td mono>{c.calls_30d}</Td>
+                          </Tr>
+                        ))}
+                      </tbody>
+                    </Table>
+                  </TableWrapper>
+                </div>
+
+                {stats.last_called_at && (
+                  <p className="text-xs text-ink/60">
+                    Last called {new Date(stats.last_called_at).toLocaleString()}
+                  </p>
+                )}
+              </div>
+            )}
+          </section>
 
           <section>
             <h2 className="text-h2 mb-3">Recent executions</h2>

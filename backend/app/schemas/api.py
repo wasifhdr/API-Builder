@@ -48,3 +48,25 @@ class ApiExecutionOut(BaseModel):
     cache_hit: bool
     created_at: datetime
     duration_ms: int | None
+
+
+class ApiStatsDayOut(BaseModel):
+    date: str
+    total: int
+    succeeded: int
+
+
+class ApiStatsConsumerOut(BaseModel):
+    name: str
+    calls_30d: int
+
+
+class ApiStatsOut(BaseModel):
+    total_calls: int
+    calls_7d: int
+    success_rate_7d: float
+    avg_duration_ms_7d: float | None
+    cache_hit_rate_7d: float
+    calls_by_day: list[ApiStatsDayOut]
+    top_consumers: list[ApiStatsConsumerOut]
+    last_called_at: datetime | None
