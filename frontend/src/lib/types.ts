@@ -170,6 +170,54 @@ export interface AdminUser {
   name: string | null
   role: UserRole
   effective_tier: PlanTier
+  username: string | null
+  phone: string | null
+  suspended_at: string | null
+  workflow_count: number
+  api_count: number
+  key_count: number
+}
+
+export interface AdminSubscription {
+  tier: PlanTier
+  status: 'active' | 'expired' | 'cancelled'
+  expires_at: string
+}
+
+export interface AdminUserDetail extends AdminUser {
+  created_at: string
+  has_password: boolean
+  has_google: boolean
+  subscription: AdminSubscription | null
+}
+
+export interface AdminUserUpdate {
+  tier?: PlanTier
+  name?: string | null
+  phone?: string | null
+  role?: UserRole
+  suspended?: boolean
+}
+
+export interface AdminKey {
+  id: string
+  label: string
+  key_prefix: string
+  last_used_at: string | null
+  revoked_at: string | null
+  created_at: string
+}
+
+export interface AdminAuditLogEntry {
+  id: string
+  actor_user_id: string | null
+  actor_email: string | null
+  actor_username: string | null
+  action: string
+  target_type: string
+  target_id: string
+  detail: Record<string, unknown>
+  created_at: string
 }
 
 export interface AdminPlan {

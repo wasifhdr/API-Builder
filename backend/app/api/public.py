@@ -14,6 +14,7 @@ from app.core.deps import SESSION_COOKIE
 from app.db import async_session
 from app.models.api import ApiKey, CustomApi
 from app.models.execution import ApiExecution, ExecutionStatus
+from app.models.user import User
 from app.redis import redis_client
 from app.services.grants import has_access
 from app.services.param_coercion import ParamCoercionError, coerce_params
@@ -90,6 +91,13 @@ async def run_api(
             raise HTTPException(status_code=404, detail="api not found")
         if not api.is_active:
             raise HTTPException(status_code=403, detail="api is disabled")
+
+        key_owner = await db.get(User, key.user_id)
+        api_owner = await db.get(User, api.owner_id)
+        if (key_owner is not None and key_owner.suspended_at is not None) or (
+            api_owner is not None and api_owner.suspended_at is not None
+        ):
+            raise HTTPException(status_code=403, detail="account suspended")
 
         if not await has_access(api, key.user_id, db):
             raise HTTPException(status_code=403, detail="no access to this api")

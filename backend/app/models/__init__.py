@@ -1,4 +1,5 @@
 from app.models.api import ApiAccessGrant, ApiInvite, ApiKey, ApiVisibility, CustomApi, GrantSource, SpecStatus
+from app.models.audit import AdminAuditLog
 from app.models.base import Base
 from app.models.billing import (
     BkashSmsReceipt,
@@ -39,4 +40,5 @@ __all__ = [
     "ExecutionStatus",
     "ApiExecution",
     "PlanSettings",
+    "AdminAuditLog",
 ]

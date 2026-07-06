@@ -46,6 +46,8 @@ async def current_user(
     user = await db.get(User, user_id)
     if user is None:
         raise HTTPException(status_code=401, detail="user not found")
+    if user.suspended_at is not None:
+        raise HTTPException(status_code=403, detail="account suspended")
     return user
 
 

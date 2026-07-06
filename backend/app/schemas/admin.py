@@ -4,7 +4,7 @@ from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.models.billing import PaymentPurpose, PaymentStatus, PlanTier, VerificationMethod
+from app.models.billing import PaymentPurpose, PaymentStatus, PlanTier, SubscriptionStatus, VerificationMethod
 from app.models.user import UserRole
 
 
@@ -46,10 +46,62 @@ class AdminUserOut(BaseModel):
     name: str | None
     role: UserRole
     effective_tier: PlanTier
+    username: str | None = None
+    phone: str | None = None
+    suspended_at: datetime | None = None
+    workflow_count: int = 0
+    api_count: int = 0
+    key_count: int = 0
 
 
-class TierOverrideRequest(BaseModel):
+class AdminSubscriptionOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
     tier: PlanTier
+    status: SubscriptionStatus
+    expires_at: datetime
+
+
+class AdminUserDetailOut(AdminUserOut):
+    created_at: datetime
+    has_password: bool
+    has_google: bool
+    subscription: AdminSubscriptionOut | None = None
+
+
+class AdminUserUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    tier: PlanTier | None = None
+    name: str | None = None
+    phone: str | None = None
+    role: UserRole | None = None
+    suspended: bool | None = None
+
+
+class AdminKeyOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: uuid.UUID
+    label: str
+    key_prefix: str
+    last_used_at: datetime | None
+    revoked_at: datetime | None
+    created_at: datetime
+
+
+class AdminKeyUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    label: str
+
+
+class AdminAuditLogOut(BaseModel):
+    id: uuid.UUID
+    actor_user_id: uuid.UUID | None
+    actor_email: str | None
+    actor_username: str | None
+    action: str
+    target_type: str
+    target_id: str
+    detail: dict
+    created_at: datetime
 
 
 class AdminPlanOut(BaseModel):

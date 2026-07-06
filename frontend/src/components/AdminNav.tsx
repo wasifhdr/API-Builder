@@ -1,10 +1,12 @@
 import { NavLink } from 'react-router-dom'
 
 const TABS = [
+  { to: '/admin/users', label: 'Users' },
+  { to: '/admin/controls', label: 'Admin Controls' },
+  { to: '/admin/plans', label: 'Plans' },
   { to: '/admin/transactions', label: 'Transactions' },
   { to: '/admin/sms', label: 'SMS feed' },
-  { to: '/admin/users', label: 'Users' },
-  { to: '/admin/plans', label: 'Plans' },
+  { to: '/admin/audit', label: 'Audit log' },
 ]
 
 export default function AdminNav() {

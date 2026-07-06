@@ -81,25 +81,34 @@ async def test_plan_for_falls_back_to_defaults_when_table_empty(db):
 # --- admin PATCH updates a value, cache invalidation reflects it ---
 
 
-async def test_admin_patch_updates_value_and_invalidates_cache(db):
+async def test_admin_patch_updates_value_and_invalidates_cache(db, make_user):
+    admin = await _make_super(db, make_user)
     # warm the cache with defaults
     before = await plan_for(PlanTier.PRO, db)
     assert before.price_bdt != 999
 
-    await admin_api.update_plan_settings(PlanTier.PRO, AdminPlanUpdate(price_bdt=999), db)
+    await admin_api.update_plan_settings(
+        tier=PlanTier.PRO, body=AdminPlanUpdate(price_bdt=999), admin=admin, db=db
+    )
 
     after = await plan_for(PlanTier.PRO, db)
     assert after.price_bdt == 999
 
 
-async def test_admin_patch_free_tier_price_rejected(db):
+async def test_admin_patch_free_tier_price_rejected(db, make_user):
+    admin = await _make_super(db, make_user)
     with pytest.raises(HTTPException) as exc_info:
-        await admin_api.update_plan_settings(PlanTier.FREE, AdminPlanUpdate(price_bdt=10), db)
+        await admin_api.update_plan_settings(
+            tier=PlanTier.FREE, body=AdminPlanUpdate(price_bdt=10), admin=admin, db=db
+        )
     assert exc_info.value.status_code == 400
 
 
-async def test_admin_patch_free_tier_price_zero_allowed(db):
-    result = await admin_api.update_plan_settings(PlanTier.FREE, AdminPlanUpdate(price_bdt=0), db)
+async def test_admin_patch_free_tier_price_zero_allowed(db, make_user):
+    admin = await _make_super(db, make_user)
+    result = await admin_api.update_plan_settings(
+        tier=PlanTier.FREE, body=AdminPlanUpdate(price_bdt=0), admin=admin, db=db
+    )
     assert result.price_bdt == 0
 
 
