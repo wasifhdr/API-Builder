@@ -4,7 +4,7 @@ from fastapi import APIRouter, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 
-from app.api import auth, billing, me
+from app.api import auth, billing, me, recordings, ws
 from app.config import settings
 from app.db import engine
 from app.redis import redis_client
@@ -51,3 +51,5 @@ app.include_router(api_router)
 app.include_router(auth.router, prefix="/api")
 app.include_router(me.router, prefix="/api")
 app.include_router(billing.router, prefix="/api")
+app.include_router(recordings.router, prefix="/api")
+app.include_router(ws.router, prefix="/api")

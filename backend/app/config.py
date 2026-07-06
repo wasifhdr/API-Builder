@@ -5,7 +5,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # .env lives at the repo root, one level above backend/ — resolve relative to
 # this file so it loads correctly regardless of the process's cwd.
-ENV_FILE = Path(__file__).resolve().parent.parent.parent / ".env"
+REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+ENV_FILE = REPO_ROOT / ".env"
 
 
 class Settings(BaseSettings):
@@ -24,9 +25,19 @@ class Settings(BaseSettings):
     plan_price_max_bdt: int = 500
     quota_tz: str = "Asia/Dhaka"
 
+    rec_max_concurrency: int = 1
+    profiles_dir: str = "./data/profiles"
+
     @property
     def admin_email_set(self) -> set[str]:
         return {e.strip().lower() for e in self.admin_emails.split(",") if e.strip()}
+
+    @property
+    def profiles_path(self) -> Path:
+        # data/ lives at the repo root regardless of the worker's cwd — resolve
+        # relative fragments against REPO_ROOT rather than trusting cwd.
+        p = Path(self.profiles_dir)
+        return p if p.is_absolute() else (REPO_ROOT / p).resolve()
 
 
 @lru_cache

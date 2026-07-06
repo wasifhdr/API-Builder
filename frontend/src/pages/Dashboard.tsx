@@ -79,7 +79,13 @@ export default function Dashboard() {
         <div className="mb-6">
           <QuotaMeter used={user.quota_used_today} limit={user.quota_limit} />
         </div>
-        <p className="text-gray-500 text-sm">No APIs yet — recording comes in a later phase.</p>
+        <Link
+          to="/recorder"
+          className="inline-block rounded-md bg-gray-900 px-4 py-2 text-sm font-medium text-white hover:bg-gray-800 mb-6"
+        >
+          New recording
+        </Link>
+        <p className="text-gray-500 text-sm">No APIs yet — publishing comes in a later phase.</p>
       </main>
     </div>
   )

@@ -5,7 +5,7 @@ export default function Landing() {
   const { user, loading } = useSession()
 
   if (loading) {
-    return <div className="min-h-screen flex items-center justify-center text-gray-500">Loading…</div>
+    return <div className="min-h-screen flex items-center justify-center bg-white text-gray-500">Loading…</div>
   }
   if (user) return <Navigate to="/dashboard" replace />
 
