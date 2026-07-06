@@ -16,6 +16,22 @@ DEFAULT_USER_AGENT = (
     "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
 )
 
+DEFAULT_VIEWPORT = {"width": 1280, "height": 800}
+
+
+def _replay_viewport(workflow_snapshot: dict) -> dict:
+    # Recording captures the real window size (see RecordingSession); replaying
+    # at that size keeps responsive layouts — and the selectors recorded
+    # against them — consistent. Older workflows without it get the default.
+    viewport = (workflow_snapshot.get("browser_settings") or {}).get("viewport") or {}
+    try:
+        width, height = int(viewport["width"]), int(viewport["height"])
+    except (KeyError, TypeError, ValueError):
+        return DEFAULT_VIEWPORT
+    if not (200 <= width <= 3840 and 200 <= height <= 2160):
+        return DEFAULT_VIEWPORT
+    return {"width": width, "height": height}
+
 
 class ReplayError(Exception):
     def __init__(self, message: str, artifact_path: str | None = None):
@@ -75,7 +91,7 @@ async def replay_workflow(
         browser = await pw.chromium.launch(headless=True, args=["--disable-gpu"])
         context_kwargs: dict = {
             "user_agent": DEFAULT_USER_AGENT,
-            "viewport": {"width": 1280, "height": 800},
+            "viewport": _replay_viewport(workflow_snapshot),
         }
         if storage_state is not None:
             context_kwargs["storage_state"] = storage_state

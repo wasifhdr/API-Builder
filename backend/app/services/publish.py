@@ -34,6 +34,7 @@ async def publish_workflow(workflow: Workflow, db: AsyncSession) -> CustomApi:
         "parameters": workflow.parameters,
         "extraction": workflow.extraction,
         "output_schema": workflow.output_schema,
+        "browser_settings": workflow.browser_settings,
     }
 
     api = CustomApi(

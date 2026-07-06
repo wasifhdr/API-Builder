@@ -1,4 +1,5 @@
 import uuid
+from urllib.parse import quote
 
 import pytest
 
@@ -63,6 +64,24 @@ async def test_selector_fallback_uses_second_candidate(fixture_site_url):
     }
     result = await replay_workflow(snapshot, {}, None, uuid.uuid4())
     assert result["data"] == {"echoed": "fallback worked"}
+
+
+async def test_replay_uses_recorded_viewport():
+    # A page that echoes its own viewport width; replay must run at the size
+    # stored in browser_settings, not the 1280x800 default.
+    html = "<div id='w'></div><script>document.getElementById('w').textContent = window.innerWidth</script>"
+    snapshot = {
+        "steps": [
+            {"i": 0, "type": "goto", "url": f"data:text/html,{quote(html)}"},
+            {"i": 1, "type": "extract", "ref": "main"},
+        ],
+        "extraction": {
+            "main": {"mode": "single", "fields": [{"name": "width", "selector": "#w", "take": "text", "transform": "number"}]}
+        },
+        "browser_settings": {"viewport": {"width": 1520, "height": 700}},
+    }
+    result = await replay_workflow(snapshot, {}, None, uuid.uuid4())
+    assert result["data"] == {"width": 1520}
 
 
 async def test_all_selectors_missing_raises_replay_error_with_artifacts(fixture_site_url):

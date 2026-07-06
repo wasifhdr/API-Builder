@@ -44,6 +44,7 @@ class RecordingSession:
         self.captured_storage_state: dict | None = None
         self.final_sample: object | None = None
         self.final_schema: dict | None = None
+        self.recorded_viewport: dict | None = None
         self.last_activity = time.monotonic()
         self.started_at = time.monotonic()
         self._stop = asyncio.Event()
@@ -84,7 +85,14 @@ class RecordingSession:
 
         try:
             async with async_playwright() as pw:
-                launch_kwargs: dict = {"headless": False, "args": ["--start-maximized"]}
+                # no_viewport: otherwise Playwright emulates a fixed 1280×720
+                # viewport — the page clips in small windows, ignores resizes,
+                # and --start-maximized never takes effect.
+                launch_kwargs: dict = {
+                    "headless": False,
+                    "args": ["--start-maximized"],
+                    "no_viewport": True,
+                }
                 if channel:
                     launch_kwargs["channel"] = channel
                 context = await pw.chromium.launch_persistent_context(str(profile_dir), **launch_kwargs)
@@ -157,6 +165,7 @@ class RecordingSession:
             await asyncio.gather(*tasks, return_exceptions=True)
 
             if not self._cancelled:
+                await self._capture_recorded_viewport()
                 await self._capture_final_extraction()
                 if self.use_saved_logins:
                     try:
@@ -192,6 +201,23 @@ class RecordingSession:
                 "message": "This page has embedded iframes. Elements inside them can't be "
                            "picked or recorded yet.",
             })
+
+    async def _capture_recorded_viewport(self) -> None:
+        # With no_viewport the page tracks the real window, so replay can't
+        # assume a size. Store what the user actually recorded at — replaying
+        # at the same size keeps responsive layouts (and the CSS-path
+        # selectors derived from them) consistent between record and replay.
+        if self.page is None:
+            return
+        try:
+            size = await self.page.evaluate(
+                "() => ({ width: window.innerWidth, height: window.innerHeight })")
+            width, height = int(size["width"]), int(size["height"])
+        except Exception:
+            log.exception("failed to capture recorded viewport")
+            return
+        if width > 0 and height > 0:
+            self.recorded_viewport = {"width": width, "height": height}
 
     async def _capture_final_extraction(self) -> None:
         config = self.extraction.get("main")
@@ -366,6 +392,9 @@ class RecordingSession:
                 if self.captured_storage_state is not None:
                     blob = json.dumps(self.captured_storage_state).encode()
                     workflow.auth_state_encrypted = encrypt_bytes(blob)
+                if self.recorded_viewport is not None:
+                    workflow.browser_settings = {
+                        **workflow.browser_settings, "viewport": self.recorded_viewport}
                 workflow.status = WorkflowStatus.READY if self.extraction.get("main") else WorkflowStatus.DRAFT
             await db.commit()
 
