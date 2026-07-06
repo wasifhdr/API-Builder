@@ -62,6 +62,7 @@ async def callback_google(code: str, state: str) -> RedirectResponse:
 
     idinfo = google_id_token.verify_oauth2_token(
         tokens["id_token"], google_requests.Request(), settings.google_client_id,
+        clock_skew_in_seconds=10,
     )
 
     google_sub = idinfo["sub"]
