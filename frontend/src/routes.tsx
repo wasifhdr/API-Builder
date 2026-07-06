@@ -8,6 +8,7 @@ import ApiDetail from './pages/ApiDetail'
 import ApiDocs from './pages/ApiDocs'
 import Billing from './pages/Billing'
 import Dashboard from './pages/Dashboard'
+import InviteAccept from './pages/InviteAccept'
 import Keys from './pages/Keys'
 import Landing from './pages/Landing'
 import RecorderSession from './pages/RecorderSession'
@@ -38,6 +39,7 @@ export default function AppRoutes() {
   return (
     <Routes>
       <Route path="/" element={<Landing />} />
+      <Route path="/invite/:token" element={<InviteAccept />} />
       <Route
         path="/dashboard"
         element={

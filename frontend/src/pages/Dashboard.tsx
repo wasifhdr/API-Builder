@@ -52,6 +52,9 @@ export default function Dashboard() {
 
   if (!user) return null
 
+  const ownedApis = apis.filter((a) => a.owner_id === user.id)
+  const sharedApis = apis.filter((a) => a.owner_id !== user.id)
+
   return (
     <div className="min-h-screen bg-white">
       <header className="border-b border-gray-200 px-6 py-4 flex items-center justify-between">
@@ -107,10 +110,10 @@ export default function Dashboard() {
         </Link>
 
         <h2 className="text-sm font-semibold text-gray-900 mb-2">My APIs</h2>
-        {apis.length === 0 && <p className="text-gray-500 text-sm">No published APIs yet.</p>}
-        {apis.length > 0 && (
-          <ul className="divide-y divide-gray-100 border border-gray-200 rounded-md max-w-lg">
-            {apis.map((a) => (
+        {ownedApis.length === 0 && <p className="text-gray-500 text-sm mb-6">No published APIs yet.</p>}
+        {ownedApis.length > 0 && (
+          <ul className="divide-y divide-gray-100 border border-gray-200 rounded-md max-w-lg mb-6">
+            {ownedApis.map((a) => (
               <li key={a.id} className="px-3 py-2 text-sm flex items-center justify-between">
                 <Link to={`/apis/${a.id}`} className="text-gray-800 hover:text-gray-900 font-mono">
                   {a.slug}
@@ -121,6 +124,22 @@ export default function Dashboard() {
               </li>
             ))}
           </ul>
+        )}
+
+        {sharedApis.length > 0 && (
+          <>
+            <h2 className="text-sm font-semibold text-gray-900 mb-2">Shared with me</h2>
+            <ul className="divide-y divide-gray-100 border border-gray-200 rounded-md max-w-lg">
+              {sharedApis.map((a) => (
+                <li key={a.id} className="px-3 py-2 text-sm flex items-center justify-between">
+                  <Link to={`/apis/${a.id}`} className="text-gray-800 hover:text-gray-900 font-mono">
+                    {a.slug}
+                  </Link>
+                  <span className="text-gray-400 text-xs">granted</span>
+                </li>
+              ))}
+            </ul>
+          </>
         )}
       </main>
     </div>

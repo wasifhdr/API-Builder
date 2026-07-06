@@ -15,6 +15,7 @@ from app.db import async_session
 from app.models.api import ApiKey, CustomApi
 from app.models.execution import ApiExecution, ExecutionStatus
 from app.redis import redis_client
+from app.services.grants import has_access
 from app.services.param_coercion import ParamCoercionError, coerce_params
 
 RATE_LIMIT_PER_MINUTE = 60
@@ -81,9 +82,7 @@ async def run_api(
         if not api.is_active:
             raise HTTPException(status_code=403, detail="api is disabled")
 
-        if api.owner_id != key.user_id:
-            # Sharing/grants land in Phase 8 — for now only the owner can call
-            # their own (private-by-default) API.
+        if not await has_access(api, key.user_id, db):
             raise HTTPException(status_code=403, detail="no access to this api")
 
         parameters = api.workflow_snapshot.get("parameters", [])
@@ -184,7 +183,7 @@ async def get_execution(
         raise HTTPException(status_code=502, detail=execution.error_message or "execution failed")
 
 
-async def _owner_session_user_id(request: Request) -> uuid.UUID | None:
+async def _session_user_id(request: Request) -> uuid.UUID | None:
     sid = request.cookies.get(SESSION_COOKIE)
     if not sid:
         return None
@@ -201,21 +200,22 @@ async def get_openapi_spec(
     async with async_session() as db:
         result = await db.execute(select(CustomApi).where(CustomApi.slug == slug))
         api = result.scalar_one_or_none()
-    if api is None:
-        raise HTTPException(status_code=404, detail="api not found")
+        if api is None:
+            raise HTTPException(status_code=404, detail="api not found")
 
-    # Docs pages are browsed from a session (the owner, viewing their own
-    # ApiDocs page) but /v1/run itself needs a real key — accept either here.
-    authorized = False
-    if x_api_key:
-        key = await _authenticate_key(x_api_key)
-        authorized = key.user_id == api.owner_id
-    if not authorized:
-        session_user_id = await _owner_session_user_id(request)
-        authorized = session_user_id is not None and session_user_id == api.owner_id
+        # Docs pages are browsed from a session (owner or a grantee, viewing
+        # ApiDocs) but /v1/run itself needs a real key — accept either here.
+        if x_api_key:
+            key = await _authenticate_key(x_api_key)
+            candidate_user_id = key.user_id
+        else:
+            candidate_user_id = await _session_user_id(request)
+            if candidate_user_id is None:
+                raise HTTPException(status_code=401, detail="unauthorized")
 
-    if not authorized:
-        raise HTTPException(status_code=401, detail="unauthorized")
-    if api.openapi_spec is None:
-        raise HTTPException(status_code=404, detail="spec not generated yet")
-    return JSONResponse(api.openapi_spec)
+        if not await has_access(api, candidate_user_id, db):
+            raise HTTPException(status_code=403, detail="no access to this api")
+
+        if api.openapi_spec is None:
+            raise HTTPException(status_code=404, detail="spec not generated yet")
+        return JSONResponse(api.openapi_spec)

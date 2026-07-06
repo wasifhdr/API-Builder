@@ -14,6 +14,7 @@ class CustomApiOut(BaseModel):
 
     id: uuid.UUID
     workflow_id: uuid.UUID
+    owner_id: uuid.UUID
     slug: str
     name: str
     description: str | None
@@ -31,6 +32,8 @@ class CustomApiUpdate(BaseModel):
 
     cache_ttl_seconds: int | None = None
     is_active: bool | None = None
+    visibility: ApiVisibility | None = None
+    price_bdt: Decimal | None = None
 
 
 class ApiExecutionOut(BaseModel):

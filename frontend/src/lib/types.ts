@@ -49,6 +49,7 @@ export type ExecutionStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 't
 export interface CustomApi {
   id: string
   workflow_id: string
+  owner_id: string
   slug: string
   name: string
   description: string | null
@@ -59,6 +60,43 @@ export interface CustomApi {
   cache_ttl_seconds: number
   is_active: boolean
   created_at: string
+}
+
+export type GrantSource = 'invite' | 'purchase' | 'admin'
+
+export interface Invite {
+  id: string
+  api_id: string
+  token: string
+  max_uses: number | null
+  use_count: number
+  expires_at: string | null
+  revoked_at: string | null
+  created_at: string
+}
+
+export interface Grant {
+  id: string
+  api_id: string
+  user_id: string
+  granted_via: GrantSource
+  expires_at: string | null
+  revoked_at: string | null
+  created_at: string
+}
+
+export interface InvitePreview {
+  api_name: string
+  api_slug: string
+  price_bdt: string | null
+  valid: boolean
+  reason: string | null
+}
+
+export interface AcceptInviteResult {
+  status: 'granted' | 'payment_required'
+  payment_intent_id: string | null
+  amount_expected_bdt: string | null
 }
 
 export interface ApiExecution {
