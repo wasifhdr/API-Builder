@@ -75,7 +75,10 @@ export default function AdminAudit() {
               <Tr key={r.id}>
                 <Td mono>{new Date(r.created_at).toLocaleString()}</Td>
                 <Td>
-                  {r.actor_email ?? (r.actor_user_id ? 'deleted user' : 'system')}
+                  {/* actor_user_id is nulled by the same ON DELETE SET NULL that removes
+                      actor_email/actor_username, so a missing actor always means the
+                      acting account was deleted — there's no separate "system" actor. */}
+                  {r.actor_email ?? 'deleted user'}
                   {r.actor_username && <span className="text-ink/60"> ({r.actor_username})</span>}
                 </Td>
                 <Td mono>{r.action}</Td>
