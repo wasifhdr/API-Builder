@@ -9,13 +9,16 @@ $frontend = Join-Path $root "frontend"
 
 Write-Host "Reminder: run 'docker compose up -d' for Postgres+Redis, and scripts\run-llama.ps1 for the local LLM (optional; app works with LLM_ENABLED=false)." -ForegroundColor Yellow
 
-Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd `"$backend`"; uv run uvicorn app.main:app --reload --port 8000"
+# -WorkingDirectory (not an embedded `cd "$path";`) because Start-Process's
+# -ArgumentList array mangles elements that mix embedded quotes with a `;` —
+# it silently drops the quotes, which breaks paths containing spaces.
+Start-Process powershell -ArgumentList "-NoExit", "-Command", "uv run uvicorn app.main:app --reload --port 8000" -WorkingDirectory $backend
 
 $workerMain = Join-Path $backend "app\workers\main.py"
 if (Test-Path $workerMain) {
-    Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd `"$backend`"; uv run python -m app.workers.main"
+    Start-Process powershell -ArgumentList "-NoExit", "-Command", "uv run python -m app.workers.main" -WorkingDirectory $backend
 } else {
     Write-Host "Skipping worker: backend/app/workers/main.py doesn't exist yet (added in Phase 3)." -ForegroundColor DarkGray
 }
 
-Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd `"$frontend`"; npm run dev"
+Start-Process powershell -ArgumentList "-NoExit", "-Command", "npm run dev" -WorkingDirectory $frontend
