@@ -27,6 +27,7 @@ class Settings(BaseSettings):
 
     rec_max_concurrency: int = 1
     profiles_dir: str = "./data/profiles"
+    auth_state_fernet_key: str
 
     @property
     def admin_email_set(self) -> set[str]:

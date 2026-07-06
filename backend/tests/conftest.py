@@ -1,6 +1,12 @@
+import functools
+import http.server
+import threading
 import uuid
+from pathlib import Path
 
+import pytest
 import pytest_asyncio
+from playwright.async_api import async_playwright
 from redis.asyncio import Redis
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -8,6 +14,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from app.config import settings
 from app.models.base import Base
 from app.models.user import User
+
+FIXTURE_SITE_DIR = Path(__file__).parent / "fixtures" / "site"
 
 # Isolated from the dev DB/Redis so tests never touch real data:
 # a separate Postgres database, and Redis logical db index 1 instead of 0.
@@ -54,6 +62,30 @@ async def redis():
     yield client
     await client.flushdb()
     await client.aclose()
+
+
+@pytest.fixture(scope="session")
+def fixture_site_url():
+    # Plain threading.Thread + stdlib server — no asyncio involved, so this is
+    # safe to share across the whole session unlike the async fixtures above.
+    handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=str(FIXTURE_SITE_DIR))
+    httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    port = httpd.server_address[1]
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    yield f"http://127.0.0.1:{port}"
+    httpd.shutdown()
+    thread.join()
+
+
+@pytest_asyncio.fixture
+async def fixture_page(fixture_site_url):
+    async with async_playwright() as pw:
+        browser = await pw.chromium.launch(headless=True, args=["--disable-gpu"])
+        page = await browser.new_page()
+        await page.goto(f"{fixture_site_url}/index.html")
+        yield page
+        await browser.close()
 
 
 @pytest_asyncio.fixture

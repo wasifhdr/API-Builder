@@ -8,10 +8,13 @@ from pathlib import Path
 
 from playwright.async_api import BrowserContext, Page, async_playwright
 
+from app.core.security import encrypt_bytes
 from app.db import async_session
 from app.models.user import User
 from app.models.workflow import Workflow, WorkflowStatus
+from app.recorder.extraction import run_extraction
 from app.recorder.profiles import get_profile_dir
+from app.recorder.schema_infer import infer_schema
 from app.redis import redis_client
 
 log = logging.getLogger("recorder")
@@ -24,6 +27,7 @@ HEARTBEAT_TTL_SECONDS = 15
 HEARTBEAT_INTERVAL_SECONDS = 5
 
 RECORDED_EVENT_TYPES = {"click", "fill", "press", "select_option"}
+VALUE_STEP_TYPES = {"fill", "select_option"}
 
 
 class RecordingSession:
@@ -32,8 +36,14 @@ class RecordingSession:
         self.user_id = uuid.UUID(user_id)
         self.redis = redis_client
         self.steps: list[dict] = []
+        self.parameters: list[dict] = []
+        self.extraction: dict = {}
         self.mode = "record"
         self.page: Page | None = None
+        self.use_saved_logins = False
+        self.captured_storage_state: dict | None = None
+        self.final_sample: object | None = None
+        self.final_schema: dict | None = None
         self.last_activity = time.monotonic()
         self.started_at = time.monotonic()
         self._stop = asyncio.Event()
@@ -64,9 +74,9 @@ class RecordingSession:
             await self._publish({"t": "error", "message": "workflow or user not found"})
             return
 
-        use_saved_logins = bool(user.settings.get("use_saved_logins"))
+        self.use_saved_logins = bool(user.settings.get("use_saved_logins"))
         channel = "chrome" if user.settings.get("recorder_channel") == "chrome" else None
-        profile_dir, is_temp = get_profile_dir(self.user_id, use_saved_logins)
+        profile_dir, is_temp = get_profile_dir(self.user_id, self.use_saved_logins)
 
         await self._publish({"t": "status", "state": "launching"})
 
@@ -133,6 +143,24 @@ class RecordingSession:
                 t.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
 
+            if not self._cancelled:
+                await self._capture_final_extraction()
+                if self.use_saved_logins:
+                    try:
+                        self.captured_storage_state = await context.storage_state()
+                    except Exception:
+                        log.exception("failed to capture storage_state")
+
+    async def _capture_final_extraction(self) -> None:
+        config = self.extraction.get("main")
+        if not config or self.page is None:
+            return
+        try:
+            self.final_sample = await run_extraction(self.page, config)
+            self.final_schema = infer_schema(self.final_sample)
+        except Exception:
+            log.exception("final extraction failed at save time")
+
     def _record_step(self, step: dict) -> None:
         step = {"i": len(self.steps), **step}
         self.steps.append(step)
@@ -140,10 +168,26 @@ class RecordingSession:
 
     async def _handle_page_event(self, event: dict) -> None:
         etype = event.get("type")
+
+        if etype == "pick_result":
+            await self._publish({
+                "t": "pick_result",
+                "candidate": {
+                    "selectors": event.get("selectors", []),
+                    "preview": event.get("preview"),
+                    "count": event.get("count"),
+                    "generalized": event.get("generalized"),
+                },
+            })
+            return
+
         if etype not in RECORDED_EVENT_TYPES:
             return
+
         step = {k: v for k, v in event.items() if k != "type"}
         step["type"] = etype
+        if etype in VALUE_STEP_TYPES and "value" in step:
+            step["value"] = {"literal": step["value"]}
         self._record_step(step)
         await self._publish({"t": "step_recorded", "step": self.steps[-1]})
 
@@ -189,6 +233,11 @@ class RecordingSession:
 
         if ctype == "set_mode":
             self.mode = cmd.get("mode", "record")
+            if self.page is not None:
+                try:
+                    await self.page.evaluate("(m) => window.__abSetMode && window.__abSetMode(m)", self.mode)
+                except Exception:
+                    pass
         elif ctype == "undo_step":
             i = cmd.get("i")
             if isinstance(i, int) and 0 <= i < len(self.steps):
@@ -202,6 +251,14 @@ class RecordingSession:
                     await self.page.bring_to_front()
                 except Exception:
                     pass
+        elif ctype == "mark_param":
+            await self._handle_mark_param(cmd)
+        elif ctype == "set_extraction":
+            config = cmd.get("config")
+            if isinstance(config, dict):
+                self.extraction["main"] = config
+        elif ctype == "test_extraction":
+            await self._handle_test_extraction()
         elif ctype == "save":
             self._save_requested = cmd
             self._stop.set()
@@ -210,6 +267,42 @@ class RecordingSession:
             self._stop.set()
         else:
             log.debug("ignoring command not yet supported: %s", ctype)
+
+    async def _handle_mark_param(self, cmd: dict) -> None:
+        step_i = cmd.get("step_i")
+        name = cmd.get("name")
+        if not isinstance(step_i, int) or not name:
+            return
+        if not (0 <= step_i < len(self.steps)):
+            return
+        step = self.steps[step_i]
+        if step.get("type") not in VALUE_STEP_TYPES or not isinstance(step.get("value"), dict):
+            return
+
+        literal = step["value"].get("literal")
+        step["value"] = {"param": name}
+        self.parameters = [p for p in self.parameters if p["name"] != name]
+        self.parameters.append({
+            "name": name,
+            "type": "string",
+            "required": True,
+            "example": literal,
+            "description": None,
+            "source_step": step_i,
+        })
+        await self._publish({"t": "param_marked", "parameter": self.parameters[-1], "step": step})
+
+    async def _handle_test_extraction(self) -> None:
+        config = self.extraction.get("main")
+        if not config or self.page is None:
+            await self._publish({"t": "error", "message": "no extraction configured yet"})
+            return
+        try:
+            sample = await run_extraction(self.page, config)
+            schema = infer_schema(sample)
+            await self._publish({"t": "extraction_result", "sample": sample, "schema": schema})
+        except Exception as exc:
+            await self._publish({"t": "error", "message": f"extraction failed: {exc}"})
 
     async def _finalize(self) -> None:
         async with async_session() as db:
@@ -222,7 +315,16 @@ class RecordingSession:
                 if self._save_requested and self._save_requested.get("name"):
                     workflow.name = self._save_requested["name"]
                 workflow.steps = self.steps
-                workflow.status = WorkflowStatus.DRAFT
+                workflow.parameters = self.parameters
+                workflow.extraction = self.extraction
+                if self.final_sample is not None:
+                    workflow.sample_output = self.final_sample
+                if self.final_schema is not None:
+                    workflow.output_schema = self.final_schema
+                if self.captured_storage_state is not None:
+                    blob = json.dumps(self.captured_storage_state).encode()
+                    workflow.auth_state_encrypted = encrypt_bytes(blob)
+                workflow.status = WorkflowStatus.READY if self.extraction.get("main") else WorkflowStatus.DRAFT
             await db.commit()
 
         await self._publish({"t": "status", "state": "closed"})

@@ -45,13 +45,25 @@ async def recording_ws(websocket: WebSocket, workflow_id: uuid.UUID) -> None:
     await pubsub.subscribe(evt_channel)
 
     stop = asyncio.Event()
+    session_ended = asyncio.Event()
 
     async def pubsub_to_ws() -> None:
         try:
             async for message in pubsub.listen():
                 if message["type"] != "message":
                     continue
-                await websocket.send_text(message["data"])
+                data = message["data"]
+                try:
+                    parsed = json.loads(data)
+                except (TypeError, ValueError):
+                    parsed = None
+                if parsed and parsed.get("t") == "status" and parsed.get("state") == "closed":
+                    # A normal end (save/cancel) — the worker deletes its own
+                    # heartbeat key as part of this same cleanup, so
+                    # heartbeat_watch must stop treating its disappearance as
+                    # a crash from this point on.
+                    session_ended.set()
+                await websocket.send_text(data)
         except Exception:
             pass
         finally:
@@ -87,17 +99,20 @@ async def recording_ws(websocket: WebSocket, workflow_id: uuid.UUID) -> None:
         loop = asyncio.get_event_loop()
         launch_deadline = loop.time() + HEARTBEAT_LAUNCH_GRACE_SECONDS
 
-        while not stop.is_set():
+        while not stop.is_set() and not session_ended.is_set():
             if await redis_client.exists(alive_key):
                 await websocket.send_text(json.dumps({"t": "status", "state": "ready"}))
                 break
             if loop.time() > launch_deadline:
-                await mark_died()
+                if not session_ended.is_set():
+                    await mark_died()
                 return
             await asyncio.sleep(1)
 
-        while not stop.is_set():
+        while not stop.is_set() and not session_ended.is_set():
             if not await redis_client.exists(alive_key):
+                if session_ended.is_set():
+                    return
                 await mark_died()
                 return
             await asyncio.sleep(HEARTBEAT_POLL_SECONDS)

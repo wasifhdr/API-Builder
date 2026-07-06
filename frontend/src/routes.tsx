@@ -6,6 +6,7 @@ import Landing from './pages/Landing'
 import RecorderSession from './pages/RecorderSession'
 import RecorderStart from './pages/RecorderStart'
 import Settings from './pages/Settings'
+import WorkflowEditor from './pages/WorkflowEditor'
 
 function RequireAuth({ children }: { children: ReactNode }) {
   const { user, loading } = useSession()
@@ -49,6 +50,14 @@ export default function AppRoutes() {
         element={
           <RequireAuth>
             <RecorderSession />
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/workflows/:workflowId/edit"
+        element={
+          <RequireAuth>
+            <WorkflowEditor />
           </RequireAuth>
         }
       />

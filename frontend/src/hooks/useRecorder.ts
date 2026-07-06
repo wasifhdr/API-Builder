@@ -1,11 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { RecorderStatus, Step } from '../lib/types'
+import type { ExtractionConfig, Parameter, PickCandidate, RecorderStatus, Step } from '../lib/types'
 
 interface RecorderState {
   status: RecorderStatus
   steps: Step[]
   error: string | null
   saved: boolean
+  mode: 'record' | 'pick'
+  pickResult: PickCandidate | null
+  extractionResult: { sample: unknown; schema: unknown } | null
+  parameters: Parameter[]
 }
 
 const RECONNECT_DELAY_MS = 2000
@@ -16,6 +20,10 @@ export function useRecorder(workflowId: string) {
     steps: [],
     error: null,
     saved: false,
+    mode: 'record',
+    pickResult: null,
+    extractionResult: null,
+    parameters: [],
   })
   const wsRef = useRef<WebSocket | null>(null)
   const reconnectTimer = useRef<number | null>(null)
@@ -42,6 +50,19 @@ export function useRecorder(workflowId: string) {
           break
         case 'step_removed':
           setState((s) => ({ ...s, steps: s.steps.filter((step) => step.i !== msg.i) }))
+          break
+        case 'pick_result':
+          setState((s) => ({ ...s, pickResult: msg.candidate }))
+          break
+        case 'extraction_result':
+          setState((s) => ({ ...s, extractionResult: { sample: msg.sample, schema: msg.schema } }))
+          break
+        case 'param_marked':
+          setState((s) => ({
+            ...s,
+            parameters: [...s.parameters.filter((p) => p.name !== msg.parameter.name), msg.parameter],
+            steps: s.steps.map((step) => (step.i === msg.step.i ? msg.step : step)),
+          }))
           break
         case 'error':
           setState((s) => ({ ...s, error: msg.message }))
@@ -79,13 +100,29 @@ export function useRecorder(workflowId: string) {
     wsRef.current?.send(JSON.stringify(cmd))
   }, [])
 
+  const setMode = useCallback(
+    (mode: 'record' | 'pick') => {
+      setState((s) => ({ ...s, mode, pickResult: null }))
+      send({ t: 'set_mode', mode })
+    },
+    [send],
+  )
+
   return {
     status: state.status,
     steps: state.steps,
     error: state.error,
     saved: state.saved,
+    mode: state.mode,
+    pickResult: state.pickResult,
+    extractionResult: state.extractionResult,
+    parameters: state.parameters,
+    setMode,
     undoStep: (i: number) => send({ t: 'undo_step', i }),
     bringToFront: () => send({ t: 'bring_to_front' }),
+    markParam: (stepI: number, name: string) => send({ t: 'mark_param', step_i: stepI, name }),
+    setExtraction: (config: ExtractionConfig) => send({ t: 'set_extraction', config }),
+    testExtraction: () => send({ t: 'test_extraction' }),
     save: () => send({ t: 'save' }),
     cancel: () => send({ t: 'cancel' }),
   }
