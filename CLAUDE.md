@@ -14,6 +14,9 @@ Single-machine deployment: Windows 11 laptop, RTX 4050 6 GB.
   acceptance criteria. Work one phase per session, in order. Commit per phase.
 - **[docs/DESIGN.md](docs/DESIGN.md)** — frontend visual design system ("Warm Editorial"): theme
   tokens, component recipes, per-page styling guide. Read before any frontend/UI work.
+- **[docs/MULTI_TENANCY_PLAN.md](docs/MULTI_TENANCY_PLAN.md)** — accounts restructure (super
+  admins, email/password auth, profiles, admin controls): phases T1–T7, one per session. Wins
+  over the Blueprint for those features.
 
 ## Stack & processes
 
