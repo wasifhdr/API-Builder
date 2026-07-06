@@ -12,11 +12,14 @@ from app.workers import handlers
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("worker")
 
-# jobs:llm joins this map in Phase 6 (spec generation), and periodic_sweep
-# (subscription/payment expiry) in Phase 7.
+# periodic_sweep (subscription/payment expiry) joins in Phase 7.
 QUEUES = {  # stream -> (handler, max concurrent)
     "jobs:rec": (handlers.record_session, settings.rec_max_concurrency),
     "jobs:exec": (handlers.execute_api, settings.exec_max_concurrency),
+    # Concurrency pinned to 1 regardless of hardware: llama.cpp is configured
+    # with --parallel 1, so a second concurrent generation would just queue
+    # behind the first anyway — and it keeps VRAM usage predictable (§6.1).
+    "jobs:llm": (handlers.generate_spec, 1),
 }
 
 

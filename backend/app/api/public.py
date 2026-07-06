@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import select
 
 from app.config import settings
+from app.core.deps import SESSION_COOKIE
 from app.db import async_session
 from app.models.api import ApiKey, CustomApi
 from app.models.execution import ApiExecution, ExecutionStatus
@@ -183,14 +184,38 @@ async def get_execution(
         raise HTTPException(status_code=502, detail=execution.error_message or "execution failed")
 
 
+async def _owner_session_user_id(request: Request) -> uuid.UUID | None:
+    sid = request.cookies.get(SESSION_COOKIE)
+    if not sid:
+        return None
+    user_id_str = await redis_client.hget(f"sess:{sid}", "user_id")
+    return uuid.UUID(user_id_str) if user_id_str else None
+
+
 @public_app.get("/apis/{slug}/openapi.json")
-async def get_openapi_spec(slug: str, x_api_key: str | None = Header(default=None)) -> JSONResponse:
-    await _authenticate_key(x_api_key)
+async def get_openapi_spec(
+    slug: str,
+    request: Request,
+    x_api_key: str | None = Header(default=None),
+) -> JSONResponse:
     async with async_session() as db:
         result = await db.execute(select(CustomApi).where(CustomApi.slug == slug))
         api = result.scalar_one_or_none()
     if api is None:
         raise HTTPException(status_code=404, detail="api not found")
+
+    # Docs pages are browsed from a session (the owner, viewing their own
+    # ApiDocs page) but /v1/run itself needs a real key — accept either here.
+    authorized = False
+    if x_api_key:
+        key = await _authenticate_key(x_api_key)
+        authorized = key.user_id == api.owner_id
+    if not authorized:
+        session_user_id = await _owner_session_user_id(request)
+        authorized = session_user_id is not None and session_user_id == api.owner_id
+
+    if not authorized:
+        raise HTTPException(status_code=401, detail="unauthorized")
     if api.openapi_spec is None:
         raise HTTPException(status_code=404, detail="spec not generated yet")
     return JSONResponse(api.openapi_spec)

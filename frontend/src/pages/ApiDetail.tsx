@@ -48,6 +48,15 @@ export default function ApiDetail() {
     }
   }
 
+  async function regenerateSpec() {
+    try {
+      const updated = await api.post<CustomApi>(`/apis/${apiId}/regenerate-spec`)
+      setCustomApi(updated)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to regenerate spec')
+    }
+  }
+
   if (!customApi) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-white text-gray-500">
@@ -72,6 +81,15 @@ export default function ApiDetail() {
         <div>
           <h1 className="text-lg font-semibold text-gray-900">{customApi.name}</h1>
           <p className="text-sm text-gray-500 font-mono">/v1/run/{customApi.slug}</p>
+        </div>
+
+        <div className="flex items-center gap-4 text-sm">
+          <Link to={`/docs/${customApi.slug}`} className="text-blue-600 hover:text-blue-800">
+            View docs
+          </Link>
+          <button type="button" onClick={regenerateSpec} className="text-gray-600 hover:text-gray-900">
+            Regenerate docs
+          </button>
         </div>
 
         <section>

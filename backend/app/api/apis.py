@@ -1,3 +1,4 @@
+import json
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -6,9 +7,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import current_user
 from app.db import get_db
-from app.models.api import CustomApi
+from app.models.api import CustomApi, SpecStatus
 from app.models.execution import ApiExecution
 from app.models.user import User
+from app.redis import redis_client
 from app.schemas.api import ApiExecutionOut, CustomApiOut, CustomApiUpdate
 
 router = APIRouter(prefix="/apis", tags=["apis"])
@@ -54,6 +56,20 @@ async def update_api(
         api.is_active = data["is_active"]
     await db.commit()
     await db.refresh(api)
+    return api
+
+
+@router.post("/{api_id}/regenerate-spec", response_model=CustomApiOut)
+async def regenerate_spec(
+    api_id: uuid.UUID,
+    user: User = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+) -> CustomApi:
+    api = await _get_owned_api(api_id, user, db)
+    api.spec_status = SpecStatus.PENDING
+    await db.commit()
+    await db.refresh(api)
+    await redis_client.xadd("jobs:llm", {"payload": json.dumps({"api_id": str(api.id)})})
     return api
 
 

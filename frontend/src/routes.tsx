@@ -2,6 +2,7 @@ import type { ReactNode } from 'react'
 import { Navigate, Route, Routes } from 'react-router-dom'
 import { useSession } from './hooks/useSession'
 import ApiDetail from './pages/ApiDetail'
+import ApiDocs from './pages/ApiDocs'
 import Dashboard from './pages/Dashboard'
 import Keys from './pages/Keys'
 import Landing from './pages/Landing'
@@ -76,6 +77,14 @@ export default function AppRoutes() {
         element={
           <RequireAuth>
             <Keys />
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/docs/:slug"
+        element={
+          <RequireAuth>
+            <ApiDocs />
           </RequireAuth>
         }
       />

@@ -34,6 +34,9 @@ class Settings(BaseSettings):
     sync_wait_seconds: int = 55
     failures_dir: str = "./data/failures"
 
+    llama_base_url: str = "http://127.0.0.1:8080/v1"
+    llm_enabled: bool = True
+
     @property
     def admin_email_set(self) -> set[str]:
         return {e.strip().lower() for e in self.admin_emails.split(",") if e.strip()}
