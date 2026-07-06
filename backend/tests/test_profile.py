@@ -22,11 +22,14 @@ from app.services.sessions import create_session, user_sessions_key
 
 
 def _patch_redis(monkeypatch, redis) -> None:
-    # Both app.api.profile and app.services.accounts hold their own
-    # `from app.redis import redis_client` binding — patch both, following
-    # the same convention as test_auth.py.
+    # app.api.profile, app.services.accounts, and app.api.auth each hold their
+    # own `from app.redis import redis_client` binding — patch all three,
+    # following the same convention as test_auth.py. auth matters because the
+    # re-registration test calls auth_api.register, and the unpatched global
+    # client's pool can be bound to a previous test's closed event loop.
     monkeypatch.setattr(profile_api, "redis_client", redis)
     monkeypatch.setattr(accounts_module, "redis_client", redis)
+    monkeypatch.setattr(auth_api, "redis_client", redis)
 
 
 def _resp() -> Response:
