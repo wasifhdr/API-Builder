@@ -29,6 +29,11 @@ class Settings(BaseSettings):
     profiles_dir: str = "./data/profiles"
     auth_state_fernet_key: str
 
+    exec_max_concurrency: int = 2
+    exec_timeout_seconds: int = 90
+    sync_wait_seconds: int = 55
+    failures_dir: str = "./data/failures"
+
     @property
     def admin_email_set(self) -> set[str]:
         return {e.strip().lower() for e in self.admin_emails.split(",") if e.strip()}
@@ -38,6 +43,11 @@ class Settings(BaseSettings):
         # data/ lives at the repo root regardless of the worker's cwd — resolve
         # relative fragments against REPO_ROOT rather than trusting cwd.
         p = Path(self.profiles_dir)
+        return p if p.is_absolute() else (REPO_ROOT / p).resolve()
+
+    @property
+    def failures_path(self) -> Path:
+        p = Path(self.failures_dir)
         return p if p.is_absolute() else (REPO_ROOT / p).resolve()
 
 

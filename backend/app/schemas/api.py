@@ -1,0 +1,47 @@
+import uuid
+from datetime import datetime
+from decimal import Decimal
+from typing import Any
+
+from pydantic import BaseModel, ConfigDict
+
+from app.models.api import ApiVisibility, SpecStatus
+from app.models.execution import ExecutionStatus
+
+
+class CustomApiOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    workflow_id: uuid.UUID
+    slug: str
+    name: str
+    description: str | None
+    visibility: ApiVisibility
+    price_bdt: Decimal | None
+    spec_status: SpecStatus
+    openapi_spec: dict | None
+    cache_ttl_seconds: int
+    is_active: bool
+    created_at: datetime
+
+
+class CustomApiUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    cache_ttl_seconds: int | None = None
+    is_active: bool | None = None
+
+
+class ApiExecutionOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    status: ExecutionStatus
+    params: dict
+    result: Any | None
+    error_message: str | None
+    failure_artifact_path: str | None
+    cache_hit: bool
+    created_at: datetime
+    duration_ms: int | None

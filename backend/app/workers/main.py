@@ -12,10 +12,11 @@ from app.workers import handlers
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("worker")
 
-# jobs:exec and jobs:llm join this map in later phases (execution + spec
-# generation), and periodic_sweep (subscription/payment expiry) in Phase 7.
+# jobs:llm joins this map in Phase 6 (spec generation), and periodic_sweep
+# (subscription/payment expiry) in Phase 7.
 QUEUES = {  # stream -> (handler, max concurrent)
     "jobs:rec": (handlers.record_session, settings.rec_max_concurrency),
+    "jobs:exec": (handlers.execute_api, settings.exec_max_concurrency),
 }
 
 

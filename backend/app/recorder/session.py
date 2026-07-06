@@ -314,6 +314,8 @@ class RecordingSession:
             else:
                 if self._save_requested and self._save_requested.get("name"):
                     workflow.name = self._save_requested["name"]
+                if self.extraction.get("main") and not any(s.get("type") == "extract" for s in self.steps):
+                    self._record_step({"type": "extract", "ref": "main"})
                 workflow.steps = self.steps
                 workflow.parameters = self.parameters
                 workflow.extraction = self.extraction

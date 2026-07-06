@@ -1,7 +1,9 @@
 import type { ReactNode } from 'react'
 import { Navigate, Route, Routes } from 'react-router-dom'
 import { useSession } from './hooks/useSession'
+import ApiDetail from './pages/ApiDetail'
 import Dashboard from './pages/Dashboard'
+import Keys from './pages/Keys'
 import Landing from './pages/Landing'
 import RecorderSession from './pages/RecorderSession'
 import RecorderStart from './pages/RecorderStart'
@@ -58,6 +60,22 @@ export default function AppRoutes() {
         element={
           <RequireAuth>
             <WorkflowEditor />
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/apis/:apiId"
+        element={
+          <RequireAuth>
+            <ApiDetail />
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/keys"
+        element={
+          <RequireAuth>
+            <Keys />
           </RequireAuth>
         }
       />

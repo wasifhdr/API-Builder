@@ -1,6 +1,8 @@
+import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useSession } from '../hooks/useSession'
-import type { PlanTier } from '../lib/types'
+import { api } from '../lib/api'
+import type { CustomApi, PlanTier } from '../lib/types'
 
 const TIER_STYLES: Record<PlanTier, string> = {
   free: 'bg-gray-100 text-gray-700',
@@ -41,6 +43,13 @@ function QuotaMeter({ used, limit }: { used: number; limit: number | null }) {
 
 export default function Dashboard() {
   const { user, logout } = useSession()
+  const [apis, setApis] = useState<CustomApi[]>([])
+
+  useEffect(() => {
+    if (!user) return
+    api.get<CustomApi[]>('/apis').then(setApis).catch(() => undefined)
+  }, [user])
+
   if (!user) return null
 
   return (
@@ -48,6 +57,9 @@ export default function Dashboard() {
       <header className="border-b border-gray-200 px-6 py-4 flex items-center justify-between">
         <h1 className="text-lg font-semibold text-gray-900">API Builder</h1>
         <div className="flex items-center gap-4">
+          <Link to="/keys" className="text-sm text-gray-600 hover:text-gray-900">
+            API Keys
+          </Link>
           <Link to="/settings" className="text-sm text-gray-600 hover:text-gray-900">
             Settings
           </Link>
@@ -85,7 +97,23 @@ export default function Dashboard() {
         >
           New recording
         </Link>
-        <p className="text-gray-500 text-sm">No APIs yet — publishing comes in a later phase.</p>
+
+        <h2 className="text-sm font-semibold text-gray-900 mb-2">My APIs</h2>
+        {apis.length === 0 && <p className="text-gray-500 text-sm">No published APIs yet.</p>}
+        {apis.length > 0 && (
+          <ul className="divide-y divide-gray-100 border border-gray-200 rounded-md max-w-lg">
+            {apis.map((a) => (
+              <li key={a.id} className="px-3 py-2 text-sm flex items-center justify-between">
+                <Link to={`/apis/${a.id}`} className="text-gray-800 hover:text-gray-900 font-mono">
+                  {a.slug}
+                </Link>
+                <span className={a.is_active ? 'text-green-600 text-xs' : 'text-gray-400 text-xs'}>
+                  {a.is_active ? 'active' : 'disabled'}
+                </span>
+              </li>
+            ))}
+          </ul>
+        )}
       </main>
     </div>
   )

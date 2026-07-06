@@ -19,6 +19,10 @@ export function describeStep(step: Step): string {
       return `Press ${step.key} on ${selector}`
     case 'select_option':
       return `Select ${stepValueLabel(step.value)} in ${selector}`
+    case 'extract':
+      return 'Extract data'
+    case 'scroll_page':
+      return 'Scroll for more results'
     default:
       return step.type
   }

@@ -43,6 +43,36 @@ export interface ExtractionConfig {
   fields: ExtractionField[]
 }
 
+export type SpecStatus = 'pending' | 'generating' | 'ready' | 'failed'
+export type ExecutionStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'timeout'
+
+export interface CustomApi {
+  id: string
+  workflow_id: string
+  slug: string
+  name: string
+  description: string | null
+  visibility: 'private' | 'shared'
+  price_bdt: string | null
+  spec_status: SpecStatus
+  openapi_spec: Record<string, unknown> | null
+  cache_ttl_seconds: number
+  is_active: boolean
+  created_at: string
+}
+
+export interface ApiExecution {
+  id: string
+  status: ExecutionStatus
+  params: Record<string, unknown>
+  result: unknown
+  error_message: string | null
+  failure_artifact_path: string | null
+  cache_hit: boolean
+  created_at: string
+  duration_ms: number | null
+}
+
 export interface UserSettings {
   use_saved_logins?: boolean
   recorder_channel?: 'chromium' | 'chrome'

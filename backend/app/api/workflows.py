@@ -6,8 +6,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.deps import current_user
 from app.db import get_db
 from app.models.user import User
-from app.models.workflow import Workflow
+from app.models.workflow import Workflow, WorkflowStatus
+from app.schemas.api import CustomApiOut
 from app.schemas.workflow import WorkflowOut, WorkflowUpdate
+from app.services.publish import publish_workflow
 
 router = APIRouter(prefix="/workflows", tags=["workflows"])
 
@@ -46,3 +48,15 @@ async def update_workflow(
     await db.commit()
     await db.refresh(workflow)
     return workflow
+
+
+@router.post("/{workflow_id}/publish", response_model=CustomApiOut, status_code=201)
+async def publish(
+    workflow_id: uuid.UUID,
+    user: User = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    workflow = await _get_owned_workflow(workflow_id, user, db)
+    if workflow.status != WorkflowStatus.READY:
+        raise HTTPException(status_code=400, detail="workflow must be ready (needs extraction) to publish")
+    return await publish_workflow(workflow, db)

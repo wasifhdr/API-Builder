@@ -2,7 +2,8 @@
 <html>
 <head><title>Fixture Shop</title></head>
 <body>
-  <input id="search-input" name="q" type="text" />
+  <input id="search-input" name="q" type="text" oninput="document.getElementById('search-echo').textContent = this.value" />
+  <span id="search-echo" class="search-echo"></span>
   <span class="page-title">Fixture Shop</span>
 
   <div class="book-list-wrapper">
