@@ -20,19 +20,20 @@ async def create_recording(
     ctx: UserWithTier = Depends(current_user_with_tier),
     db: AsyncSession = Depends(get_db),
 ) -> CreateRecordingResponse:
-    limit = plan_for(ctx.tier).daily_creation_limit
-    try:
-        await consume_creation_quota(ctx.user.id, limit, redis_client, db)
-    except QuotaExceeded as exc:
-        raise HTTPException(
-            status_code=429,
-            detail={
-                "message": "Daily API creation limit reached",
-                "limit": exc.limit,
-                "used": exc.used,
-                "reset_seconds": exc.reset_seconds,
-            },
-        ) from exc
+    if not ctx.is_super:
+        limit = (await plan_for(ctx.tier, db)).daily_creation_limit
+        try:
+            await consume_creation_quota(ctx.user.id, limit, redis_client, db)
+        except QuotaExceeded as exc:
+            raise HTTPException(
+                status_code=429,
+                detail={
+                    "message": "Daily API creation limit reached",
+                    "limit": exc.limit,
+                    "used": exc.used,
+                    "reset_seconds": exc.reset_seconds,
+                },
+            ) from exc
 
     workflow = Workflow(
         user_id=ctx.user.id,

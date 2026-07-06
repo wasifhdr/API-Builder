@@ -91,6 +91,8 @@ export default function Billing() {
 
   if (!user) return null
 
+  const isSuperAdmin = user.role === 'super_admin'
+
   return (
     <AppShell>
       <Link to="/dashboard" className={buttonClasses('ghost', 'sm', 'mb-4')}>
@@ -100,44 +102,58 @@ export default function Billing() {
         eyebrow={<CapsLabel>Billing</CapsLabel>}
         title="Plans & payment"
         subline={
-          <>
-            Current plan: <span className="font-bold uppercase">{user.tier}</span>
-          </>
+          isSuperAdmin ? undefined : (
+            <>
+              Current plan: <span className="font-bold uppercase">{user.tier}</span>
+            </>
+          )
         }
       />
 
       {error && <p className="mb-6 text-sm font-medium text-red-deep">{error}</p>}
 
-      <section className="mb-10 grid gap-5 sm:grid-cols-3">
-        {plans.map((p) => {
-          const isCurrent = user.tier === p.tier
-          const accent = PLAN_ACCENT[p.tier]
-          return (
-            <div key={p.tier} className={cardClasses({ variant: accent ? 'feature' : 'quiet', accent })}>
-              <h2 className="text-h2">{p.name}</h2>
-              <p className="my-2 font-display text-display-sm">
-                {p.price_bdt > 0 ? <span className="font-mono">৳{p.price_bdt}</span> : 'Free'}
-                {p.price_bdt > 0 && (
-                  <span className="ml-1 font-sans text-sm font-normal text-ink/60">/mo</span>
+      {isSuperAdmin ? (
+        <div className={cardClasses({ variant: 'callout', accent: 'gold', className: 'mb-10' })}>
+          <CapsLabel tone="gold" className="mb-1">
+            Super admin
+          </CapsLabel>
+          <p className="text-sm text-ink/80">
+            You&apos;re a super admin — plans don&apos;t apply. You have unlimited creations and sharing on
+            every API, with no payment required.
+          </p>
+        </div>
+      ) : (
+        <section className="mb-10 grid gap-5 sm:grid-cols-3">
+          {plans.map((p) => {
+            const isCurrent = user.tier === p.tier
+            const accent = PLAN_ACCENT[p.tier]
+            return (
+              <div key={p.tier} className={cardClasses({ variant: accent ? 'feature' : 'quiet', accent })}>
+                <h2 className="text-h2">{p.name}</h2>
+                <p className="my-2 font-display text-display-sm">
+                  {p.price_bdt > 0 ? <span className="font-mono">৳{p.price_bdt}</span> : 'Free'}
+                  {p.price_bdt > 0 && (
+                    <span className="ml-1 font-sans text-sm font-normal text-ink/60">/mo</span>
+                  )}
+                </p>
+                <p className="mb-4 text-sm text-ink/70">
+                  {p.daily_creation_limit === null ? 'Unlimited' : p.daily_creation_limit} creations/day
+                  {p.can_share && ' · sharing & invites'}
+                </p>
+                {isCurrent ? (
+                  <Badge variant="pending">Current</Badge>
+                ) : (
+                  p.tier !== 'free' && (
+                    <Button className="w-full justify-center" onClick={() => upgrade(p.tier as 'pro' | 'max')}>
+                      Upgrade to {p.name}
+                    </Button>
+                  )
                 )}
-              </p>
-              <p className="mb-4 text-sm text-ink/70">
-                {p.daily_creation_limit === null ? 'Unlimited' : p.daily_creation_limit} creations/day
-                {p.can_share && ' · sharing & invites'}
-              </p>
-              {isCurrent ? (
-                <Badge variant="pending">Current</Badge>
-              ) : (
-                p.tier !== 'free' && (
-                  <Button className="w-full justify-center" onClick={() => upgrade(p.tier as 'pro' | 'max')}>
-                    Upgrade to {p.name}
-                  </Button>
-                )
-              )}
-            </div>
-          )
-        })}
-      </section>
+              </div>
+            )
+          })}
+        </section>
+      )}
 
       <section>
         <h2 className="text-h2 mb-3">Your payment history</h2>

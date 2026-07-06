@@ -172,6 +172,20 @@ export interface AdminUser {
   effective_tier: PlanTier
 }
 
+export interface AdminPlan {
+  tier: PlanTier
+  price_bdt: number
+  daily_creation_limit: number | null
+  can_share: boolean
+  updated_at: string
+}
+
+export interface AdminPlanUpdate {
+  price_bdt?: number
+  daily_creation_limit?: number | null
+  can_share?: boolean
+}
+
 export interface UserSettings {
   use_saved_logins?: boolean
   recorder_channel?: 'chromium' | 'chrome'

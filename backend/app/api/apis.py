@@ -12,7 +12,6 @@ from app.config import settings
 from app.core.deps import current_user, get_effective_tier
 from app.db import get_db
 from app.models.api import ApiAccessGrant, ApiInvite, ApiVisibility, CustomApi, SpecStatus
-from app.models.billing import PlanTier
 from app.models.execution import ApiExecution, ExecutionStatus
 from app.models.user import User, UserRole
 from app.redis import redis_client
@@ -26,6 +25,7 @@ from app.schemas.api import (
 )
 from app.schemas.invite import CreateInviteRequest, GrantOut, InviteOut
 from app.services.grants import has_access
+from app.services.plans import plan_for
 
 router = APIRouter(prefix="/apis", tags=["apis"])
 
@@ -88,9 +88,10 @@ async def update_api(
 
     wants_shared = data.get("visibility") == ApiVisibility.SHARED
     wants_price = bool(data.get("price_bdt")) and data["price_bdt"] > 0
-    if wants_shared or wants_price:
+    if (wants_shared or wants_price) and user.role != UserRole.SUPER_ADMIN:
         tier = await get_effective_tier(user.id, db)
-        if tier not in (PlanTier.PRO, PlanTier.MAX):
+        can_share = (await plan_for(tier, db)).can_share
+        if not can_share:
             raise HTTPException(status_code=403, detail="sharing and pricing require a Pro or Max plan")
 
     if "visibility" in data:
@@ -141,9 +142,11 @@ async def create_invite(
     db: AsyncSession = Depends(get_db),
 ) -> ApiInvite:
     api = await _get_owned_api(api_id, user, db)
-    tier = await get_effective_tier(user.id, db)
-    if tier not in (PlanTier.PRO, PlanTier.MAX):
-        raise HTTPException(status_code=403, detail="invites require a Pro or Max plan")
+    if user.role != UserRole.SUPER_ADMIN:
+        tier = await get_effective_tier(user.id, db)
+        can_share = (await plan_for(tier, db)).can_share
+        if not can_share:
+            raise HTTPException(status_code=403, detail="invites require a Pro or Max plan")
     if api.visibility != ApiVisibility.SHARED:
         raise HTTPException(status_code=400, detail="set visibility to shared before creating invites")
 
