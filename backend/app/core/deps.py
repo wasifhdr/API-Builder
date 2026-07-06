@@ -2,7 +2,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from fastapi import Cookie, Depends, HTTPException
+from fastapi import Cookie, Depends, HTTPException, Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -13,6 +13,17 @@ from app.redis import redis_client
 
 SESSION_COOKIE = "ab_session"
 SESSION_TTL_SECONDS = 7 * 24 * 3600
+
+
+def set_session_cookie(response: Response, sid: str) -> None:
+    response.set_cookie(
+        SESSION_COOKIE,
+        sid,
+        max_age=SESSION_TTL_SECONDS,
+        httponly=True,
+        samesite="lax",
+        path="/",
+    )
 
 
 async def get_session_user_id(ab_session: str | None = Cookie(default=None, alias=SESSION_COOKIE)) -> uuid.UUID:
@@ -38,9 +49,9 @@ async def current_user(
     return user
 
 
-async def require_admin(user: User = Depends(current_user)) -> User:
-    if user.role != UserRole.ADMIN:
-        raise HTTPException(status_code=403, detail="admin only")
+async def require_super_admin(user: User = Depends(current_user)) -> User:
+    if user.role != UserRole.SUPER_ADMIN:
+        raise HTTPException(status_code=403, detail="super admin only")
     return user
 
 

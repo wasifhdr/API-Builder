@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.deps import get_effective_tier, require_admin
+from app.core.deps import get_effective_tier, require_super_admin
 from app.db import get_db
 from app.models.billing import (
     BkashSmsReceipt,
@@ -26,7 +26,7 @@ from app.schemas.admin import (
 )
 from app.services.sms_matcher import apply_verified_effects
 
-router = APIRouter(prefix="/admin", tags=["admin"], dependencies=[Depends(require_admin)])
+router = APIRouter(prefix="/admin", tags=["admin"], dependencies=[Depends(require_super_admin)])
 
 ADMIN_OVERRIDE_DAYS = 30
 
@@ -42,7 +42,7 @@ async def list_transactions(db: AsyncSession = Depends(get_db)) -> list[PaymentT
 @router.post("/transactions/{transaction_id}/verify", response_model=AdminTransactionOut)
 async def verify_transaction(
     transaction_id: uuid.UUID,
-    admin: User = Depends(require_admin),
+    admin: User = Depends(require_super_admin),
     db: AsyncSession = Depends(get_db),
 ) -> PaymentTransaction:
     result = await db.execute(
@@ -71,7 +71,7 @@ async def verify_transaction(
 async def reject_transaction(
     transaction_id: uuid.UUID,
     body: RejectRequest,
-    admin: User = Depends(require_admin),
+    admin: User = Depends(require_super_admin),
     db: AsyncSession = Depends(get_db),
 ) -> PaymentTransaction:
     transaction = await db.get(PaymentTransaction, transaction_id)
