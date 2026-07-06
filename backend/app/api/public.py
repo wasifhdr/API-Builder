@@ -44,12 +44,21 @@ async def _authenticate_key(x_api_key: str | None) -> ApiKey:
 
 
 async def _check_rate_limit(key_id: uuid.UUID) -> None:
-    minute = int(time.time() // 60)
+    now = time.time()
+    minute = int(now // 60)
     rl_key = f"rl:key:{key_id}:{minute}"
     count = await redis_client.incr(rl_key)
     await redis_client.expire(rl_key, RATE_LIMIT_WINDOW_SECONDS)
     if count > RATE_LIMIT_PER_MINUTE:
-        raise HTTPException(status_code=429, detail="rate limit exceeded")
+        reset_seconds = 60 - int(now % 60)
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "message": "rate limit exceeded",
+                "limit": RATE_LIMIT_PER_MINUTE,
+                "reset_seconds": reset_seconds,
+            },
+        )
 
 
 def _cache_key(api_id: uuid.UUID, params: dict) -> str:

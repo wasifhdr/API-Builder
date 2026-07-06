@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from redis.asyncio import Redis
@@ -13,10 +13,11 @@ QUOTA_KEY_TTL_SECONDS = 48 * 3600
 
 
 class QuotaExceeded(Exception):
-    def __init__(self, limit: int, used: int):
+    def __init__(self, limit: int, used: int, reset_seconds: int):
         self.limit = limit
         self.used = used
-        super().__init__(f"quota exceeded: {used}/{limit}")
+        self.reset_seconds = reset_seconds
+        super().__init__(f"quota exceeded: {used}/{limit}, resets in {reset_seconds}s")
 
 
 def _tz() -> ZoneInfo:
@@ -31,6 +32,12 @@ def quota_key(user_id: uuid.UUID, now: datetime | None = None) -> str:
 def _day_start(now: datetime | None = None) -> datetime:
     now = now or datetime.now(_tz())
     return now.replace(hour=0, minute=0, second=0, microsecond=0)
+
+
+def seconds_until_reset(now: datetime | None = None) -> int:
+    now = now or datetime.now(_tz())
+    next_day_start = _day_start(now) + timedelta(days=1)
+    return int((next_day_start - now).total_seconds())
 
 
 async def get_usage_today(
@@ -78,5 +85,5 @@ async def consume_creation_quota(
     await redis.expire(key, QUOTA_KEY_TTL_SECONDS)
     if new_count > limit:
         await redis.decr(key)
-        raise QuotaExceeded(limit=limit, used=new_count - 1)
+        raise QuotaExceeded(limit=limit, used=new_count - 1, reset_seconds=seconds_until_reset(now))
     return new_count

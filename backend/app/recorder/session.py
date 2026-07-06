@@ -49,6 +49,8 @@ class RecordingSession:
         self._stop = asyncio.Event()
         self._save_requested: dict | None = None
         self._cancelled = False
+        self._warned_popup = False
+        self._warned_iframes = False
 
     @property
     def evt_channel(self) -> str:
@@ -106,6 +108,7 @@ class RecordingSession:
 
         await context.expose_binding("__abEmit", on_event)
         await context.add_init_script(path=str(INJECTED_JS_PATH))
+        context.on("page", lambda new_page: asyncio.create_task(self._handle_new_page(new_page)))
 
         last_url = start_url
 
@@ -123,18 +126,28 @@ class RecordingSession:
                 await page.evaluate("(m) => window.__abSetMode && window.__abSetMode(m)", self.mode)
             except Exception:
                 pass
+            await self._check_iframes()
 
         page.on("framenavigated", lambda frame: asyncio.create_task(on_frame_navigated(frame)))
 
         await page.goto(start_url, wait_until="domcontentloaded")
         self._record_step({"type": "goto", "url": start_url})
         await self._publish({"t": "step_recorded", "step": self.steps[-1]})
+
+        # Subscribe to the command channel *before* announcing "ready" — a
+        # command published the instant a client sees "ready" must not be
+        # dropped just because the listener task hadn't started yet (Redis
+        # pub/sub has no replay/backlog for a subscriber that joins late).
+        cmd_pubsub = self.redis.pubsub()
+        await cmd_pubsub.subscribe(self.cmd_channel)
+
         await self._publish({"t": "status", "state": "ready"})
+        await self._check_iframes()
 
         tasks = [
             asyncio.create_task(self._heartbeat_loop()),
             asyncio.create_task(self._watchdog_loop()),
-            asyncio.create_task(self._command_loop()),
+            asyncio.create_task(self._command_loop(cmd_pubsub)),
         ]
         try:
             await self._stop.wait()
@@ -150,6 +163,35 @@ class RecordingSession:
                         self.captured_storage_state = await context.storage_state()
                     except Exception:
                         log.exception("failed to capture storage_state")
+
+    async def _handle_new_page(self, new_page: Page) -> None:
+        # Multi-tab flows aren't supported (§15) — the worker keeps recording
+        # on the original page. Warn once rather than silently ignoring it,
+        # since a popup-driven flow otherwise fails mysteriously at replay
+        # time with no steps ever recorded for the actual interaction.
+        if self._warned_popup:
+            return
+        self._warned_popup = True
+        await self._publish({
+            "t": "warning",
+            "message": "A new tab or window opened. Multi-tab flows aren't supported yet — "
+                       "recording continues on the original page only.",
+        })
+
+    async def _check_iframes(self) -> None:
+        if self._warned_iframes or self.page is None:
+            return
+        try:
+            frame_count = len(self.page.frames) - 1  # exclude the main frame
+        except Exception:
+            return
+        if frame_count > 0:
+            self._warned_iframes = True
+            await self._publish({
+                "t": "warning",
+                "message": "This page has embedded iframes. Elements inside them can't be "
+                           "picked or recorded yet.",
+            })
 
     async def _capture_final_extraction(self) -> None:
         config = self.extraction.get("main")
@@ -211,9 +253,7 @@ class RecordingSession:
                 self._stop.set()
                 return
 
-    async def _command_loop(self) -> None:
-        pubsub = self.redis.pubsub()
-        await pubsub.subscribe(self.cmd_channel)
+    async def _command_loop(self, pubsub) -> None:
         try:
             async for message in pubsub.listen():
                 if message["type"] != "message":

@@ -19,6 +19,24 @@ from app.redis import redis_client
 
 log = logging.getLogger("worker")
 
+RESULT_SIZE_LIMIT_BYTES = 256 * 1024
+
+
+def _truncate_for_storage(data: object) -> tuple[object, bool]:
+    """Caps what gets persisted to the execution log at RESULT_SIZE_LIMIT_BYTES
+    of serialized JSON. Only list-mode results can be meaningfully shortened
+    by dropping trailing items — a single-object result is left as-is since
+    truncating it would corrupt its shape. The live HTTP response (read from
+    Redis, not this) is never truncated; this only bounds what Postgres keeps
+    long-term."""
+    if not isinstance(data, list) or len(json.dumps(data).encode()) <= RESULT_SIZE_LIMIT_BYTES:
+        return data, False
+
+    truncated = list(data)
+    while truncated and len(json.dumps(truncated).encode()) > RESULT_SIZE_LIMIT_BYTES:
+        truncated.pop()
+    return truncated, True
+
 
 async def record_session(payload: dict) -> None:
     await RecordingSession(payload["workflow_id"], payload["user_id"]).run()
@@ -80,7 +98,9 @@ async def execute_api(payload: dict) -> None:
             execution.duration_ms = result_payload["duration_ms"]
             if result_payload["status"] == "succeeded":
                 execution.status = ExecutionStatus.SUCCEEDED
-                execution.result = result_payload["data"]
+                data, truncated = _truncate_for_storage(result_payload["data"])
+                execution.result = data
+                execution.result_truncated = truncated
             elif result_payload["status"] == "timeout":
                 execution.status = ExecutionStatus.TIMEOUT
                 execution.error_message = result_payload["error"]

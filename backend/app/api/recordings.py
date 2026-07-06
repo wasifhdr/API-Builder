@@ -26,7 +26,12 @@ async def create_recording(
     except QuotaExceeded as exc:
         raise HTTPException(
             status_code=429,
-            detail={"message": "Daily API creation limit reached", "limit": exc.limit, "used": exc.used},
+            detail={
+                "message": "Daily API creation limit reached",
+                "limit": exc.limit,
+                "used": exc.used,
+                "reset_seconds": exc.reset_seconds,
+            },
         ) from exc
 
     workflow = Workflow(

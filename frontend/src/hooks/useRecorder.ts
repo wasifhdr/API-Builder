@@ -10,6 +10,7 @@ interface RecorderState {
   pickResult: PickCandidate | null
   extractionResult: { sample: unknown; schema: unknown } | null
   parameters: Parameter[]
+  warnings: string[]
 }
 
 const RECONNECT_DELAY_MS = 2000
@@ -24,6 +25,7 @@ export function useRecorder(workflowId: string) {
     pickResult: null,
     extractionResult: null,
     parameters: [],
+    warnings: [],
   })
   const wsRef = useRef<WebSocket | null>(null)
   const reconnectTimer = useRef<number | null>(null)
@@ -66,6 +68,9 @@ export function useRecorder(workflowId: string) {
           break
         case 'error':
           setState((s) => ({ ...s, error: msg.message }))
+          break
+        case 'warning':
+          setState((s) => ({ ...s, warnings: [...s.warnings, msg.message] }))
           break
         case 'saved':
           setState((s) => ({ ...s, saved: true }))
@@ -117,6 +122,7 @@ export function useRecorder(workflowId: string) {
     pickResult: state.pickResult,
     extractionResult: state.extractionResult,
     parameters: state.parameters,
+    warnings: state.warnings,
     setMode,
     undoStep: (i: number) => send({ t: 'undo_step', i }),
     bringToFront: () => send({ t: 'bring_to_front' }),

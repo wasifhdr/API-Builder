@@ -26,6 +26,7 @@ export default function RecorderSession() {
     mode,
     pickResult,
     extractionResult,
+    warnings,
     undoStep,
     bringToFront,
     setMode,
@@ -109,6 +110,11 @@ export default function RecorderSession() {
           A Chromium window opened on your desktop — browse there and steps will appear here live.
         </p>
         {error && <p className="text-red-600 text-sm">{error}</p>}
+        {warnings.map((w, i) => (
+          <p key={i} className="text-amber-600 text-sm bg-amber-50 rounded px-3 py-2">
+            {w}
+          </p>
+        ))}
 
         <div className="flex items-center gap-2">
           <button
