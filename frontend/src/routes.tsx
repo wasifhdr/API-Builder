@@ -8,6 +8,7 @@ import AdminUsers from './pages/AdminUsers'
 import ApiDetail from './pages/ApiDetail'
 import ApiDocs from './pages/ApiDocs'
 import Billing from './pages/Billing'
+import ClaimUsername from './pages/ClaimUsername'
 import Dashboard from './pages/Dashboard'
 import InviteAccept from './pages/InviteAccept'
 import Keys from './pages/Keys'
@@ -21,14 +22,24 @@ function RequireAuth({ children }: { children: ReactNode }) {
   const { user, loading } = useSession()
   if (loading) return <PageLoading />
   if (!user) return <Navigate to="/" replace />
+  if (!user.username) return <Navigate to="/claim-username" replace />
   return <>{children}</>
 }
 
-function RequireAdmin({ children }: { children: ReactNode }) {
+function RequireSuperAdmin({ children }: { children: ReactNode }) {
   const { user, loading } = useSession()
   if (loading) return <PageLoading />
   if (!user) return <Navigate to="/" replace />
-  if (user.role !== 'admin') return <Navigate to="/dashboard" replace />
+  if (!user.username) return <Navigate to="/claim-username" replace />
+  if (user.role !== 'super_admin') return <Navigate to="/dashboard" replace />
+  return <>{children}</>
+}
+
+function RequireUsernameClaim({ children }: { children: ReactNode }) {
+  const { user, loading } = useSession()
+  if (loading) return <PageLoading />
+  if (!user) return <Navigate to="/" replace />
+  if (user.username) return <Navigate to="/dashboard" replace />
   return <>{children}</>
 }
 
@@ -37,6 +48,14 @@ export default function AppRoutes() {
     <Routes>
       <Route path="/" element={<Landing />} />
       <Route path="/invite/:token" element={<InviteAccept />} />
+      <Route
+        path="/claim-username"
+        element={
+          <RequireUsernameClaim>
+            <ClaimUsername />
+          </RequireUsernameClaim>
+        }
+      />
       <Route
         path="/dashboard"
         element={
@@ -112,25 +131,25 @@ export default function AppRoutes() {
       <Route
         path="/admin/transactions"
         element={
-          <RequireAdmin>
+          <RequireSuperAdmin>
             <AdminTransactions />
-          </RequireAdmin>
+          </RequireSuperAdmin>
         }
       />
       <Route
         path="/admin/sms"
         element={
-          <RequireAdmin>
+          <RequireSuperAdmin>
             <AdminSms />
-          </RequireAdmin>
+          </RequireSuperAdmin>
         }
       />
       <Route
         path="/admin/users"
         element={
-          <RequireAdmin>
+          <RequireSuperAdmin>
             <AdminUsers />
-          </RequireAdmin>
+          </RequireSuperAdmin>
         }
       />
     </Routes>

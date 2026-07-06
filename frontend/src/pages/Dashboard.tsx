@@ -78,7 +78,7 @@ export default function Dashboard() {
       <PageHeader
         eyebrow={<CapsLabel>Dashboard</CapsLabel>}
         title={user.name ?? user.email}
-        subline={user.role === 'admin' ? 'Administrator' : undefined}
+        subline={user.role === 'super_admin' ? 'Super Admin' : undefined}
         actions={
           <Link to="/recorder" className={buttonClasses('primary')}>
             New recording

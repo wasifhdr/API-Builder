@@ -43,7 +43,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
                   {l.label}
                 </NavLink>
               ))}
-              {user?.role === 'admin' && (
+              {user?.role === 'super_admin' && (
                 <Link
                   to="/admin/transactions"
                   className={`${LINK_CLASS} ${isAdminActive ? LINK_ACTIVE : LINK_INACTIVE}`}

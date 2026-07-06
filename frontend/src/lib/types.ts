@@ -1,4 +1,4 @@
-export type UserRole = 'user' | 'admin'
+export type UserRole = 'user' | 'super_admin'
 export type PlanTier = 'free' | 'pro' | 'max'
 
 export type StepValue = { literal: string } | { param: string }
@@ -180,12 +180,23 @@ export interface UserSettings {
 export interface User {
   id: string
   email: string
+  username: string | null
   name: string | null
+  phone: string | null
   picture_url: string | null
   role: UserRole
+  has_password: boolean
+  has_google: boolean
   settings: UserSettings
   created_at: string
   tier: PlanTier
   quota_used_today: number
   quota_limit: number | null
+}
+
+export interface RegisterPayload {
+  name: string
+  email: string
+  username: string
+  password: string
 }

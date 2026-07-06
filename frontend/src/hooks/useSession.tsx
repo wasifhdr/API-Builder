@@ -1,12 +1,14 @@
 import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from 'react'
 import { api, ApiError } from '../lib/api'
-import type { User } from '../lib/types'
+import type { RegisterPayload, User } from '../lib/types'
 
 interface SessionState {
   user: User | null
   loading: boolean
   refetch: () => Promise<void>
   logout: () => Promise<void>
+  login: (email: string, password: string) => Promise<User>
+  register: (payload: RegisterPayload) => Promise<User>
 }
 
 const SessionContext = createContext<SessionState | null>(null)
@@ -39,8 +41,20 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     setUser(null)
   }, [])
 
+  const login = useCallback(async (email: string, password: string) => {
+    const loggedIn = await api.post<User>('/auth/login-password', { email, password })
+    setUser(loggedIn)
+    return loggedIn
+  }, [])
+
+  const register = useCallback(async (payload: RegisterPayload) => {
+    const registered = await api.post<User>('/auth/register', payload)
+    setUser(registered)
+    return registered
+  }, [])
+
   return (
-    <SessionContext.Provider value={{ user, loading, refetch, logout }}>
+    <SessionContext.Provider value={{ user, loading, refetch, logout, login, register }}>
       {children}
     </SessionContext.Provider>
   )
