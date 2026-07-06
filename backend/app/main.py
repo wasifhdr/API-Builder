@@ -4,7 +4,7 @@ from fastapi import APIRouter, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 
-from app.api import apis, auth, billing, keys, me, public, recordings, workflows, ws
+from app.api import admin, apis, auth, billing, keys, me, public, recordings, webhooks, workflows, ws
 from app.config import settings
 from app.db import engine
 from app.redis import redis_client
@@ -56,5 +56,7 @@ app.include_router(workflows.router, prefix="/api")
 app.include_router(apis.router, prefix="/api")
 app.include_router(keys.router, prefix="/api")
 app.include_router(ws.router, prefix="/api")
+app.include_router(admin.router, prefix="/api")
+app.include_router(webhooks.router, prefix="/api")
 
 app.mount("/v1", public.public_app)

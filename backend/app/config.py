@@ -25,6 +25,10 @@ class Settings(BaseSettings):
     plan_price_max_bdt: int = 500
     quota_tz: str = "Asia/Dhaka"
 
+    bkash_receive_msisdn: str = "01700000000"
+    sms_webhook_token: str = "changeme"
+    payment_intent_ttl_hours: int = 24
+
     rec_max_concurrency: int = 1
     profiles_dir: str = "./data/profiles"
     auth_state_fernet_key: str

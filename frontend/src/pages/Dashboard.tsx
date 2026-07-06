@@ -60,6 +60,14 @@ export default function Dashboard() {
           <Link to="/keys" className="text-sm text-gray-600 hover:text-gray-900">
             API Keys
           </Link>
+          <Link to="/billing" className="text-sm text-gray-600 hover:text-gray-900">
+            Billing
+          </Link>
+          {user.role === 'admin' && (
+            <Link to="/admin/transactions" className="text-sm text-gray-600 hover:text-gray-900">
+              Admin
+            </Link>
+          )}
           <Link to="/settings" className="text-sm text-gray-600 hover:text-gray-900">
             Settings
           </Link>

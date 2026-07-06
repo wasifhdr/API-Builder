@@ -8,11 +8,11 @@ from redis.asyncio import Redis
 from app.config import settings
 from app.redis import redis_client
 from app.workers import handlers
+from app.workers.periodic import periodic_sweep
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("worker")
 
-# periodic_sweep (subscription/payment expiry) joins in Phase 7.
 QUEUES = {  # stream -> (handler, max concurrent)
     "jobs:rec": (handlers.record_session, settings.rec_max_concurrency),
     "jobs:exec": (handlers.execute_api, settings.exec_max_concurrency),
@@ -61,7 +61,10 @@ async def consume(redis: Redis, stream: str, handler, limit: int) -> None:
 
 async def main() -> None:
     log.info("worker starting, queues=%s", list(QUEUES.keys()))
-    await asyncio.gather(*(consume(redis_client, s, h, n) for s, (h, n) in QUEUES.items()))
+    await asyncio.gather(
+        *(consume(redis_client, s, h, n) for s, (h, n) in QUEUES.items()),
+        periodic_sweep(),
+    )
 
 
 if __name__ == "__main__":

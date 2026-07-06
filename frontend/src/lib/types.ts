@@ -73,6 +73,56 @@ export interface ApiExecution {
   duration_ms: number | null
 }
 
+export type PaymentPurpose = 'subscription' | 'api_access'
+export type PaymentStatus = 'pending' | 'submitted' | 'verified' | 'rejected' | 'expired'
+export type VerificationMethod = 'auto_sms' | 'manual_admin'
+
+export interface Plan {
+  tier: PlanTier
+  name: string
+  price_bdt: number
+  daily_creation_limit: number | null
+  can_share: boolean
+}
+
+export interface PaymentIntent {
+  id: string
+  purpose: PaymentPurpose
+  plan_tier: PlanTier | null
+  api_id: string | null
+  amount_expected_bdt: string
+  amount_received_bdt: string | null
+  bkash_trx_id: string | null
+  status: PaymentStatus
+  verification_method: VerificationMethod | null
+  verified_at: string | null
+  note: string | null
+  created_at: string
+}
+
+export interface AdminTransaction extends PaymentIntent {
+  user_id: string
+}
+
+export interface AdminSms {
+  id: string
+  received_at: string
+  raw_text: string
+  sms_sender: string | null
+  parsed_trx_id: string | null
+  parsed_amount_bdt: string | null
+  parsed_sender_msisdn: string | null
+  matched_transaction_id: string | null
+}
+
+export interface AdminUser {
+  id: string
+  email: string
+  name: string | null
+  role: UserRole
+  effective_tier: PlanTier
+}
+
 export interface UserSettings {
   use_saved_logins?: boolean
   recorder_channel?: 'chromium' | 'chrome'
