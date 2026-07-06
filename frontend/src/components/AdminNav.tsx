@@ -4,6 +4,7 @@ const TABS = [
   { to: '/admin/transactions', label: 'Transactions' },
   { to: '/admin/sms', label: 'SMS feed' },
   { to: '/admin/users', label: 'Users' },
+  { to: '/admin/plans', label: 'Plans' },
 ]
 
 export default function AdminNav() {

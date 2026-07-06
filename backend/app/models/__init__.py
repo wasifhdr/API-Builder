@@ -11,6 +11,7 @@ from app.models.billing import (
     VerificationMethod,
 )
 from app.models.execution import ApiExecution, ExecutionStatus
+from app.models.plan_settings import PlanSettings
 from app.models.user import User, UserRole
 from app.models.workflow import Workflow, WorkflowStatus
 
@@ -37,4 +38,5 @@ __all__ = [
     "ApiInvite",
     "ExecutionStatus",
     "ApiExecution",
+    "PlanSettings",
 ]

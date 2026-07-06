@@ -73,6 +73,10 @@ class UserWithTier:
     user: User
     tier: PlanTier
 
+    @property
+    def is_super(self) -> bool:
+        return self.user.role == UserRole.SUPER_ADMIN
+
 
 async def current_user_with_tier(
     user: User = Depends(current_user),

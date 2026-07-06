@@ -25,11 +25,14 @@ async def create_intent(
     db: AsyncSession,
     plan_tier: PlanTier | None = None,
     api_id: uuid.UUID | None = None,
+    is_super: bool = False,
 ) -> PaymentTransaction:
     if purpose == PaymentPurpose.SUBSCRIPTION:
+        if is_super:
+            raise PaymentError(400, "super admins don't need plans")
         if plan_tier is None or plan_tier == PlanTier.FREE:
             raise PaymentError(400, "plan_tier must be pro or max")
-        amount = Decimal(plan_for(plan_tier).price_bdt)
+        amount = Decimal((await plan_for(plan_tier, db)).price_bdt)
         transaction = PaymentTransaction(
             user_id=user_id,
             purpose=purpose,

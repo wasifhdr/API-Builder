@@ -86,12 +86,14 @@ export default function Dashboard() {
         }
       />
 
-      <div className={cardClasses({ variant: 'quiet', className: 'mb-8' })}>
-        <CapsLabel tone="muted" className="mb-2">
-          Daily quota
-        </CapsLabel>
-        <QuotaCells used={user.quota_used_today} limit={user.quota_limit} />
-      </div>
+      {user.role !== 'super_admin' && (
+        <div className={cardClasses({ variant: 'quiet', className: 'mb-8' })}>
+          <CapsLabel tone="muted" className="mb-2">
+            Daily quota
+          </CapsLabel>
+          <QuotaCells used={user.quota_used_today} limit={user.quota_limit} />
+        </div>
+      )}
 
       <section className="mb-8">
         <h2 className="text-h2 mb-3">My APIs</h2>

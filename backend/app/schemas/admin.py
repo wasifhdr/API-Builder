@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 from decimal import Decimal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.models.billing import PaymentPurpose, PaymentStatus, PlanTier, VerificationMethod
 from app.models.user import UserRole
@@ -50,3 +50,19 @@ class AdminUserOut(BaseModel):
 
 class TierOverrideRequest(BaseModel):
     tier: PlanTier
+
+
+class AdminPlanOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    tier: PlanTier
+    price_bdt: int
+    daily_creation_limit: int | None
+    can_share: bool
+    updated_at: datetime
+
+
+class AdminPlanUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    price_bdt: int | None = Field(default=None, ge=0)
+    daily_creation_limit: int | None = None
+    can_share: bool | None = None

@@ -8,7 +8,7 @@ from app.config import settings
 from app.core.deps import current_user
 from app.db import get_db
 from app.models.billing import PaymentTransaction
-from app.models.user import User
+from app.models.user import User, UserRole
 from app.schemas.billing import (
     BillingConfigOut,
     CreateIntentRequest,
@@ -24,7 +24,8 @@ router = APIRouter(prefix="/billing", tags=["billing"])
 
 
 @router.get("/plans", response_model=list[PlanOut])
-async def list_plans() -> list[PlanOut]:
+async def list_plans(db: AsyncSession = Depends(get_db)) -> list[PlanOut]:
+    plans = await get_plans(db)
     return [
         PlanOut(
             tier=p.tier,
@@ -33,7 +34,7 @@ async def list_plans() -> list[PlanOut]:
             daily_creation_limit=p.daily_creation_limit,
             can_share=p.can_share,
         )
-        for p in get_plans().values()
+        for p in plans.values()
     ]
 
 
@@ -50,7 +51,12 @@ async def create_intent(
 ) -> PaymentTransaction:
     try:
         return await payments.create_intent(
-            user.id, body.purpose, db, plan_tier=body.plan_tier, api_id=body.api_id
+            user.id,
+            body.purpose,
+            db,
+            plan_tier=body.plan_tier,
+            api_id=body.api_id,
+            is_super=user.role == UserRole.SUPER_ADMIN,
         )
     except PaymentError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc

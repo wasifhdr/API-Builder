@@ -16,14 +16,18 @@ from app.models.billing import (
     SubscriptionStatus,
     VerificationMethod,
 )
+from app.models.plan_settings import PlanSettings
 from app.models.user import User
 from app.schemas.admin import (
+    AdminPlanOut,
+    AdminPlanUpdate,
     AdminSmsOut,
     AdminTransactionOut,
     AdminUserOut,
     RejectRequest,
     TierOverrideRequest,
 )
+from app.services import plans as plans_service
 from app.services.sms_matcher import apply_verified_effects
 
 router = APIRouter(prefix="/admin", tags=["admin"], dependencies=[Depends(require_super_admin)])
@@ -137,3 +141,68 @@ async def override_tier(
     await db.commit()
     tier = await get_effective_tier(user_id, db)
     return AdminUserOut(id=user.id, email=user.email, name=user.name, role=user.role, effective_tier=tier)
+
+
+@router.get("/plans", response_model=list[AdminPlanOut])
+async def list_plan_settings(db: AsyncSession = Depends(get_db)) -> list[AdminPlanOut]:
+    plans = await plans_service.get_plans(db)
+    result = await db.execute(select(PlanSettings))
+    rows = {row.tier: row for row in result.scalars().all()}
+
+    out = []
+    for tier, config in plans.items():
+        row = rows.get(tier.value)
+        out.append(
+            AdminPlanOut(
+                tier=tier,
+                price_bdt=config.price_bdt,
+                daily_creation_limit=config.daily_creation_limit,
+                can_share=config.can_share,
+                updated_at=row.updated_at if row is not None else datetime.now(timezone.utc),
+            )
+        )
+    return out
+
+
+@router.patch("/plans/{tier}", response_model=AdminPlanOut)
+async def update_plan_settings(
+    tier: PlanTier,
+    body: AdminPlanUpdate,
+    db: AsyncSession = Depends(get_db),
+) -> AdminPlanOut:
+    data = body.model_dump(exclude_unset=True)
+
+    if tier == PlanTier.FREE and "price_bdt" in data and data["price_bdt"] != 0:
+        raise HTTPException(status_code=400, detail="free tier price is locked at 0")
+
+    row = await db.get(PlanSettings, tier.value)
+    if row is None:
+        # Seed the row from current effective config (DB or fallback defaults)
+        # so a PATCH against an unseeded table (e.g. a fresh dev DB) works.
+        current = (await plans_service.get_plans(db))[tier]
+        row = PlanSettings(
+            tier=tier.value,
+            price_bdt=0 if tier == PlanTier.FREE else current.price_bdt,
+            daily_creation_limit=current.daily_creation_limit,
+            can_share=current.can_share,
+        )
+        db.add(row)
+
+    if "price_bdt" in data:
+        row.price_bdt = 0 if tier == PlanTier.FREE else data["price_bdt"]
+    if "daily_creation_limit" in data:
+        row.daily_creation_limit = data["daily_creation_limit"]
+    if "can_share" in data:
+        row.can_share = data["can_share"]
+
+    await db.commit()
+    await db.refresh(row)
+    plans_service.invalidate_cache()
+
+    return AdminPlanOut(
+        tier=tier,
+        price_bdt=row.price_bdt,
+        daily_creation_limit=row.daily_creation_limit,
+        can_share=row.can_share,
+        updated_at=row.updated_at,
+    )
