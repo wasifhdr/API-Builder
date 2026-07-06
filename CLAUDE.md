@@ -12,6 +12,8 @@ Single-machine deployment: Windows 11 laptop, RTX 4050 6 GB.
   you're implementing. When in doubt, the Blueprint wins.
 - **[docs/IMPLEMENTATION_PLAN.md](docs/IMPLEMENTATION_PLAN.md)** — phased build order with
   acceptance criteria. Work one phase per session, in order. Commit per phase.
+- **[docs/DESIGN.md](docs/DESIGN.md)** — frontend visual design system ("Warm Editorial"): theme
+  tokens, component recipes, per-page styling guide. Read before any frontend/UI work.
 
 ## Stack & processes
 

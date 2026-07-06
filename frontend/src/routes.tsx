@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react'
 import { Navigate, Route, Routes } from 'react-router-dom'
+import { PageLoading } from './components/ui'
 import { useSession } from './hooks/useSession'
 import AdminSms from './pages/AdminSms'
 import AdminTransactions from './pages/AdminTransactions'
@@ -18,18 +19,14 @@ import WorkflowEditor from './pages/WorkflowEditor'
 
 function RequireAuth({ children }: { children: ReactNode }) {
   const { user, loading } = useSession()
-  if (loading) {
-    return <div className="min-h-screen flex items-center justify-center bg-white text-gray-500">Loading…</div>
-  }
+  if (loading) return <PageLoading />
   if (!user) return <Navigate to="/" replace />
   return <>{children}</>
 }
 
 function RequireAdmin({ children }: { children: ReactNode }) {
   const { user, loading } = useSession()
-  if (loading) {
-    return <div className="min-h-screen flex items-center justify-center bg-white text-gray-500">Loading…</div>
-  }
+  if (loading) return <PageLoading />
   if (!user) return <Navigate to="/" replace />
   if (user.role !== 'admin') return <Navigate to="/dashboard" replace />
   return <>{children}</>

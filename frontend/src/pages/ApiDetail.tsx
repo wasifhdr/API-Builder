@@ -1,8 +1,43 @@
 import { useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
+import AppShell from '../components/AppShell'
+import {
+  Badge,
+  type BadgeVariant,
+  Button,
+  buttonClasses,
+  CapsLabel,
+  cardClasses,
+  CodeBlock,
+  EmptyRow,
+  FieldLabel,
+  InlineCode,
+  Input,
+  PageHeader,
+  Table,
+  TableWrapper,
+  Td,
+  Th,
+  Tr,
+} from '../components/ui'
 import { useSession } from '../hooks/useSession'
 import { ApiError, api } from '../lib/api'
-import type { ApiExecution, CustomApi, Grant, Invite } from '../lib/types'
+import type { ApiExecution, CustomApi, ExecutionStatus, Grant, Invite, SpecStatus } from '../lib/types'
+
+const SPEC_BADGE: Record<SpecStatus, BadgeVariant> = {
+  pending: 'neutral',
+  generating: 'pending',
+  ready: 'success',
+  failed: 'failed',
+}
+
+const EXEC_BADGE: Record<ExecutionStatus, BadgeVariant> = {
+  queued: 'neutral',
+  running: 'info',
+  succeeded: 'success',
+  failed: 'failed',
+  timeout: 'failed',
+}
 
 export default function ApiDetail() {
   const { apiId } = useParams<{ apiId: string }>()
@@ -119,9 +154,9 @@ export default function ApiDetail() {
 
   if (!customApi) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-white text-gray-500">
-        {error ?? 'Loading…'}
-      </div>
+      <AppShell>
+        <p className="text-sm text-ink/60">{error ?? 'Loading…'}</p>
+      </AppShell>
     )
   }
 
@@ -129,176 +164,202 @@ export default function ApiDetail() {
   const inviteLink = (token: string) => `${window.location.origin}/invite/${token}`
 
   return (
-    <div className="min-h-screen bg-white">
-      <header className="border-b border-gray-200 px-6 py-4 flex items-center justify-between">
-        <Link to="/dashboard" className="text-sm text-gray-600 hover:text-gray-900">
-          &larr; Dashboard
-        </Link>
-        <span className="text-xs uppercase font-semibold text-gray-500">{customApi.spec_status}</span>
-      </header>
-      <main className="p-6 max-w-2xl space-y-6">
-        {error && <p className="text-red-600 text-sm">{error}</p>}
-        {!isOwner && <p className="text-xs text-blue-600 uppercase font-semibold">Shared with you</p>}
+    <AppShell>
+      <Link to="/dashboard" className={buttonClasses('ghost', 'sm', 'mb-4')}>
+        &larr; Dashboard
+      </Link>
 
-        <div>
-          <h1 className="text-lg font-semibold text-gray-900">{customApi.name}</h1>
-          <p className="text-sm text-gray-500 font-mono">/v1/run/{customApi.slug}</p>
-        </div>
-
-        <div className="flex items-center gap-4 text-sm">
-          <Link to={`/docs/${customApi.slug}`} className="text-blue-600 hover:text-blue-800">
-            View docs
-          </Link>
-          {isOwner && (
-            <button type="button" onClick={regenerateSpec} className="text-gray-600 hover:text-gray-900">
-              Regenerate docs
-            </button>
-          )}
-        </div>
-
-        <section>
-          <h2 className="text-sm font-semibold text-gray-900 mb-2">Try it</h2>
-          <pre className="rounded bg-gray-50 p-3 text-xs overflow-auto">{curlExample}</pre>
-        </section>
-
-        {isOwner && (
+      <PageHeader
+        eyebrow={!isOwner ? <CapsLabel tone="blue">Shared with you</CapsLabel> : undefined}
+        title={customApi.name}
+        subline={<InlineCode>/v1/run/{customApi.slug}</InlineCode>}
+        actions={
           <>
-            <section className="space-y-3">
-              <h2 className="text-sm font-semibold text-gray-900">Settings</h2>
-              <label className="flex items-center gap-2 text-sm">
-                <input type="checkbox" checked={customApi.is_active} onChange={toggleActive} />
-                Active (accepting requests)
-              </label>
-              <div className="flex items-center gap-2 text-sm">
-                <label htmlFor="cache-ttl">Cache TTL (seconds)</label>
-                <input
+            <Badge variant={SPEC_BADGE[customApi.spec_status]}>{customApi.spec_status}</Badge>
+            {isOwner &&
+              (customApi.is_active ? (
+                <Button variant="ink" onClick={toggleActive}>
+                  Unpublish
+                </Button>
+              ) : (
+                <Button variant="primary" onClick={toggleActive}>
+                  Publish
+                </Button>
+              ))}
+          </>
+        }
+      />
+
+      {error && <p className="mb-6 text-sm font-medium text-red-deep">{error}</p>}
+
+      <div className="mb-8 flex flex-wrap items-center gap-3">
+        <Link to={`/docs/${customApi.slug}`} className={buttonClasses('default', 'sm')}>
+          View docs
+        </Link>
+        {isOwner && (
+          <Button variant="ghost" size="sm" onClick={regenerateSpec}>
+            Regenerate docs
+          </Button>
+        )}
+      </div>
+
+      <section className="mb-8">
+        <h2 className="text-h2 mb-2">Try it</h2>
+        <CodeBlock lang="bash" code={curlExample} />
+      </section>
+
+      {isOwner && (
+        <>
+          <section className={`${cardClasses({ variant: 'quiet' })} mb-8 space-y-4`}>
+            <h2 className="text-h2">Settings</h2>
+            <div className="flex flex-wrap items-end gap-2">
+              <div>
+                <FieldLabel htmlFor="cache-ttl">Cache TTL (seconds)</FieldLabel>
+                <Input
                   id="cache-ttl"
                   type="number"
                   min={0}
                   value={cacheTtl}
                   onChange={(e) => setCacheTtl(Number(e.target.value))}
-                  className="w-24 rounded border border-gray-300 px-2 py-1"
+                  className="w-32"
                 />
-                <button type="button" onClick={saveCacheTtl} className="text-xs rounded bg-gray-900 text-white px-2 py-1">
-                  Save
-                </button>
-                {saveMessage && <span className="text-green-600 text-xs">{saveMessage}</span>}
               </div>
-            </section>
+              <Button size="sm" onClick={saveCacheTtl}>
+                Save
+              </Button>
+              {saveMessage && <span className="text-sm font-medium text-green-deep">{saveMessage}</span>}
+            </div>
+          </section>
 
-            <section className="space-y-3">
-              <h2 className="text-sm font-semibold text-gray-900">Sharing</h2>
-              <label className="flex items-center gap-2 text-sm">
-                <input
-                  type="checkbox"
-                  checked={customApi.visibility === 'shared'}
-                  onChange={toggleVisibility}
-                />
-                Shared (allow invites &amp; paid access — requires Pro or Max)
-              </label>
-              {customApi.visibility === 'shared' && (
-                <div className="flex items-center gap-2 text-sm">
-                  <label htmlFor="price">Price for grantees (৳, blank = free)</label>
-                  <input
+          <section className={`${cardClasses({ variant: 'quiet' })} mb-8 space-y-4`}>
+            <h2 className="text-h2">Sharing</h2>
+            <label className="flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                className="size-4 rounded-dot border-2 border-ink accent-orange"
+                checked={customApi.visibility === 'shared'}
+                onChange={toggleVisibility}
+              />
+              Shared (allow invites &amp; paid access — requires Pro or Max)
+            </label>
+            {customApi.visibility === 'shared' && (
+              <div className="flex flex-wrap items-end gap-2">
+                <div>
+                  <FieldLabel htmlFor="price">Price for grantees (৳, blank = free)</FieldLabel>
+                  <Input
                     id="price"
                     type="text"
                     value={priceInput}
                     onChange={(e) => setPriceInput(e.target.value)}
                     placeholder="free"
-                    className="w-24 rounded border border-gray-300 px-2 py-1"
+                    className="w-32"
                   />
-                  <button type="button" onClick={savePrice} className="text-xs rounded bg-gray-900 text-white px-2 py-1">
-                    Save
-                  </button>
                 </div>
-              )}
-            </section>
+                <Button size="sm" onClick={savePrice}>
+                  Save
+                </Button>
+              </div>
+            )}
+          </section>
 
-            {customApi.visibility === 'shared' && (
-              <section className="space-y-3">
-                <div className="flex items-center justify-between">
-                  <h2 className="text-sm font-semibold text-gray-900">Invites</h2>
-                  <button type="button" onClick={createInvite} className="text-xs rounded bg-gray-900 text-white px-2 py-1">
-                    New invite
-                  </button>
-                </div>
-                {invites.length === 0 && <p className="text-sm text-gray-400">No invites yet.</p>}
+          {customApi.visibility === 'shared' && (
+            <section className="mb-8 space-y-4">
+              <div className="flex items-center justify-between">
+                <h2 className="text-h2">Invites</h2>
+                <Button size="sm" onClick={createInvite}>
+                  New invite
+                </Button>
+              </div>
+              {invites.length === 0 ? (
+                <p className="text-sm text-ink/60">No invites yet.</p>
+              ) : (
                 <ul className="space-y-2">
                   {invites.map((inv) => (
-                    <li key={inv.id} className="rounded border border-gray-200 p-2 text-xs flex items-center justify-between">
-                      <div className="font-mono truncate mr-2">{inviteLink(inv.token)}</div>
-                      <div className="flex items-center gap-2 shrink-0">
-                        <span className="text-gray-400">{inv.use_count} used</span>
+                    <li
+                      key={inv.id}
+                      className={`${cardClasses({ variant: 'quiet' })} flex items-center justify-between gap-3 py-3`}
+                    >
+                      <InlineCode>{inviteLink(inv.token)}</InlineCode>
+                      <div className="flex shrink-0 items-center gap-3 text-sm text-ink/60">
+                        <span>{inv.use_count} used</span>
                         {inv.revoked_at ? (
-                          <span className="text-gray-400">revoked</span>
+                          <Badge variant="neutral">revoked</Badge>
                         ) : (
-                          <button type="button" onClick={() => revokeInvite(inv.id)} className="text-red-600">
+                          <Button variant="danger-ghost" size="sm" onClick={() => revokeInvite(inv.id)}>
                             Revoke
-                          </button>
+                          </Button>
                         )}
                       </div>
                     </li>
                   ))}
                 </ul>
+              )}
 
-                <h2 className="text-sm font-semibold text-gray-900 pt-2">Grants</h2>
-                {grants.length === 0 && <p className="text-sm text-gray-400">No one has access yet.</p>}
+              <h2 className="text-h2 pt-2">Grants</h2>
+              {grants.length === 0 ? (
+                <p className="text-sm text-ink/60">No one has access yet.</p>
+              ) : (
                 <ul className="space-y-2">
                   {grants.map((g) => (
-                    <li key={g.id} className="rounded border border-gray-200 p-2 text-xs flex items-center justify-between">
-                      <span className="font-mono">{g.user_id}</span>
-                      <div className="flex items-center gap-2">
-                        <span className="text-gray-400">{g.granted_via}</span>
+                    <li
+                      key={g.id}
+                      className={`${cardClasses({ variant: 'quiet' })} flex items-center justify-between gap-3 py-3`}
+                    >
+                      <InlineCode>{g.user_id}</InlineCode>
+                      <div className="flex shrink-0 items-center gap-3 text-sm text-ink/60">
+                        <span>{g.granted_via}</span>
                         {g.revoked_at ? (
-                          <span className="text-gray-400">revoked</span>
+                          <Badge variant="neutral">revoked</Badge>
                         ) : (
-                          <button type="button" onClick={() => revokeGrant(g.id)} className="text-red-600">
+                          <Button variant="danger-ghost" size="sm" onClick={() => revokeGrant(g.id)}>
                             Revoke
-                          </button>
+                          </Button>
                         )}
                       </div>
                     </li>
                   ))}
                 </ul>
-              </section>
-            )}
-
-            <section>
-              <h2 className="text-sm font-semibold text-gray-900 mb-2">Recent executions</h2>
-              {executions.length === 0 && <p className="text-sm text-gray-400">No executions yet.</p>}
-              {executions.length > 0 && (
-                <table className="w-full text-xs border border-gray-200 rounded-md">
-                  <thead>
-                    <tr className="text-left text-gray-500">
-                      <th className="p-2">Status</th>
-                      <th className="p-2">Params</th>
-                      <th className="p-2">Duration</th>
-                      <th className="p-2">Error</th>
-                      <th className="p-2">Created</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {executions.map((e) => (
-                      <tr key={e.id} className="border-t border-gray-100">
-                        <td className="p-2">{e.status}</td>
-                        <td className="p-2 font-mono">{JSON.stringify(e.params)}</td>
-                        <td className="p-2">{e.duration_ms != null ? `${e.duration_ms}ms` : ''}</td>
-                        <td className="p-2 text-red-600">
-                          {e.error_message}
-                          {e.failure_artifact_path && (
-                            <div className="text-gray-400">{e.failure_artifact_path}</div>
-                          )}
-                        </td>
-                        <td className="p-2">{new Date(e.created_at).toLocaleString()}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
               )}
             </section>
-          </>
-        )}
-      </main>
-    </div>
+          )}
+
+          <section>
+            <h2 className="text-h2 mb-3">Recent executions</h2>
+            <TableWrapper>
+              <Table>
+                <thead>
+                  <tr>
+                    <Th>Status</Th>
+                    <Th>Params</Th>
+                    <Th>Duration</Th>
+                    <Th>Error</Th>
+                    <Th>Created</Th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {executions.length === 0 && <EmptyRow colSpan={5}>No executions yet.</EmptyRow>}
+                  {executions.map((e) => (
+                    <Tr key={e.id}>
+                      <Td>
+                        <Badge variant={EXEC_BADGE[e.status]}>{e.status}</Badge>
+                      </Td>
+                      <Td mono>{JSON.stringify(e.params)}</Td>
+                      <Td mono>{e.duration_ms != null ? `${e.duration_ms}ms` : ''}</Td>
+                      <Td className="text-red-deep">
+                        {e.error_message}
+                        {e.failure_artifact_path && (
+                          <div className="text-xs text-ink/50">{e.failure_artifact_path}</div>
+                        )}
+                      </Td>
+                      <Td>{new Date(e.created_at).toLocaleString()}</Td>
+                    </Tr>
+                  ))}
+                </tbody>
+              </Table>
+            </TableWrapper>
+          </section>
+        </>
+      )}
+    </AppShell>
   )
 }

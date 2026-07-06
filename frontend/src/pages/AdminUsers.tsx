@@ -1,10 +1,27 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import AdminNav from '../components/AdminNav'
+import AppShell from '../components/AppShell'
+import {
+  Badge,
+  type BadgeVariant,
+  Button,
+  buttonClasses,
+  CapsLabel,
+  EmptyRow,
+  PageHeader,
+  Table,
+  TableWrapper,
+  Td,
+  Th,
+  Tr,
+} from '../components/ui'
 import { ApiError, api } from '../lib/api'
 import type { AdminUser, PlanTier } from '../lib/types'
 
 const TIERS: PlanTier[] = ['free', 'pro', 'max']
+
+const TIER_BADGE: Record<PlanTier, BadgeVariant> = { free: 'neutral', pro: 'info', max: 'purple' }
 
 export default function AdminUsers() {
   const [users, setUsers] = useState<AdminUser[]>([])
@@ -30,53 +47,54 @@ export default function AdminUsers() {
   }
 
   return (
-    <div className="min-h-screen bg-white">
-      <header className="border-b border-gray-200 px-6 py-4">
-        <Link to="/dashboard" className="text-sm text-gray-600 hover:text-gray-900">
-          &larr; Dashboard
-        </Link>
-      </header>
+    <AppShell>
+      <Link to="/dashboard" className={buttonClasses('ghost', 'sm', 'mb-4')}>
+        &larr; Dashboard
+      </Link>
+      <PageHeader eyebrow={<CapsLabel>Admin</CapsLabel>} title="Users" />
       <AdminNav />
-      <main className="p-6 space-y-4">
-        <h1 className="text-lg font-semibold text-gray-900">Users</h1>
-        {error && <p className="text-red-600 text-sm">{error}</p>}
-        <table className="w-full text-xs border border-gray-200 rounded-md">
+
+      {error && <p className="mb-4 text-sm font-medium text-red-deep">{error}</p>}
+
+      <TableWrapper>
+        <Table>
           <thead>
-            <tr className="text-left text-gray-500">
-              <th className="p-2">Email</th>
-              <th className="p-2">Role</th>
-              <th className="p-2">Tier</th>
-              <th className="p-2">Override</th>
+            <tr>
+              <Th>Email</Th>
+              <Th>Role</Th>
+              <Th>Tier</Th>
+              <Th>Override</Th>
             </tr>
           </thead>
           <tbody>
+            {users.length === 0 && <EmptyRow colSpan={4}>No users yet.</EmptyRow>}
             {users.map((u) => (
-              <tr key={u.id} className="border-t border-gray-100">
-                <td className="p-2">{u.email}</td>
-                <td className="p-2">{u.role}</td>
-                <td className="p-2 uppercase font-medium">{u.effective_tier}</td>
-                <td className="p-2">
+              <Tr key={u.id}>
+                <Td>{u.email}</Td>
+                <Td>{u.role}</Td>
+                <Td>
+                  <Badge variant={TIER_BADGE[u.effective_tier]}>{u.effective_tier}</Badge>
+                </Td>
+                <Td>
                   <div className="flex gap-1">
                     {TIERS.map((t) => (
-                      <button
+                      <Button
                         key={t}
-                        type="button"
+                        size="sm"
+                        variant={t === u.effective_tier ? 'default' : 'ink'}
                         disabled={t === u.effective_tier}
                         onClick={() => setTier(u.id, t)}
-                        className={`rounded px-2 py-0.5 ${
-                          t === u.effective_tier ? 'bg-gray-100 text-gray-400' : 'bg-gray-900 text-white'
-                        }`}
                       >
                         {t}
-                      </button>
+                      </Button>
                     ))}
                   </div>
-                </td>
-              </tr>
+                </Td>
+              </Tr>
             ))}
           </tbody>
-        </table>
-      </main>
-    </div>
+        </Table>
+      </TableWrapper>
+    </AppShell>
   )
 }

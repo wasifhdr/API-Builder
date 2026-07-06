@@ -8,14 +8,14 @@ const TABS = [
 
 export default function AdminNav() {
   return (
-    <nav className="flex gap-4 border-b border-gray-200 px-6">
+    <nav className="mb-6 flex flex-wrap gap-2">
       {TABS.map((t) => (
         <NavLink
           key={t.to}
           to={t.to}
           className={({ isActive }) =>
-            `py-3 text-sm border-b-2 ${
-              isActive ? 'border-gray-900 text-gray-900 font-medium' : 'border-transparent text-gray-500 hover:text-gray-700'
+            `rounded-pill px-3 py-1.5 text-sm font-bold transition-colors duration-100 focus-visible:outline-[3px] focus-visible:outline-ink focus-visible:outline-offset-2 ${
+              isActive ? 'bg-ink text-paper' : 'text-ink/70 hover:bg-cream'
             }`
           }
         >

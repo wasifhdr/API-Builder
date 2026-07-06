@@ -1,6 +1,23 @@
 import { useEffect, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
+import AppShell from '../components/AppShell'
 import ExtractionEditor from '../components/ExtractionEditor'
+import {
+  Badge,
+  Button,
+  buttonClasses,
+  CapsLabel,
+  Checkbox,
+  FieldLabel,
+  Input,
+  PageHeader,
+  Select,
+  Table,
+  TableWrapper,
+  Td,
+  Th,
+  Tr,
+} from '../components/ui'
 import { api } from '../lib/api'
 import { describeStep } from '../lib/steps'
 import type { ExtractionConfig, Parameter, Step } from '../lib/types'
@@ -78,124 +95,122 @@ export default function WorkflowEditor() {
 
   if (!workflow) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-white text-gray-500">
-        {error ?? 'Loading…'}
-      </div>
+      <AppShell>
+        <p className="text-sm text-ink/60">{error ?? 'Loading…'}</p>
+      </AppShell>
     )
   }
 
   return (
-    <div className="min-h-screen bg-white">
-      <header className="border-b border-gray-200 px-6 py-4 flex items-center justify-between">
-        <Link to="/dashboard" className="text-sm text-gray-600 hover:text-gray-900">
-          &larr; Dashboard
-        </Link>
-        <span className="text-xs uppercase font-semibold text-gray-500">{workflow.status}</span>
-      </header>
-      <main className="p-6 max-w-2xl space-y-6">
-        {error && <p className="text-red-600 text-sm">{error}</p>}
-        {saveMessage && <p className="text-green-600 text-sm">{saveMessage}</p>}
+    <AppShell>
+      <Link to="/dashboard" className={buttonClasses('ghost', 'sm', 'mb-4')}>
+        &larr; Dashboard
+      </Link>
+      <PageHeader
+        eyebrow={<CapsLabel>Workflow</CapsLabel>}
+        title={workflow.name}
+        actions={<Badge variant="neutral">{workflow.status}</Badge>}
+      />
 
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">Name</label>
-          <input
-            type="text"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            className="w-full max-w-md rounded-md border border-gray-300 px-3 py-2 text-sm"
-          />
-        </div>
+      {error && <p className="mb-4 text-sm font-medium text-red-deep">{error}</p>}
+      {saveMessage && <p className="mb-4 text-sm font-medium text-green-deep">{saveMessage}</p>}
 
-        <section>
-          <h2 className="text-sm font-semibold text-gray-900 mb-2">Steps</h2>
-          <ul className="divide-y divide-gray-100 border border-gray-200 rounded-md">
-            {workflow.steps.map((step) => (
-              <li key={step.i} className="px-3 py-2 text-sm text-gray-700">
-                {describeStep(step)}
-              </li>
-            ))}
-          </ul>
-        </section>
+      <div className="mb-8">
+        <FieldLabel htmlFor="wf-name">Name</FieldLabel>
+        <Input id="wf-name" type="text" value={name} onChange={(e) => setName(e.target.value)} className="max-w-md" />
+      </div>
 
-        <section>
-          <h2 className="text-sm font-semibold text-gray-900 mb-2">Parameters</h2>
-          {parameters.length === 0 && <p className="text-sm text-gray-400">No parameters marked yet.</p>}
-          {parameters.length > 0 && (
-            <table className="w-full text-xs border border-gray-200 rounded-md">
+      <section className="mb-8">
+        <h2 className="text-h2 mb-2">Steps</h2>
+        <TableWrapper>
+          <Table>
+            <thead>
+              <tr>
+                <Th className="w-14">#</Th>
+                <Th>Step</Th>
+              </tr>
+            </thead>
+            <tbody>
+              {workflow.steps.map((step) => (
+                <Tr key={step.i}>
+                  <Td mono>{step.i}</Td>
+                  <Td>{describeStep(step)}</Td>
+                </Tr>
+              ))}
+            </tbody>
+          </Table>
+        </TableWrapper>
+      </section>
+
+      <section className="mb-8">
+        <h2 className="text-h2 mb-2">Parameters</h2>
+        {parameters.length === 0 ? (
+          <p className="text-sm text-ink/60">No parameters marked yet.</p>
+        ) : (
+          <TableWrapper>
+            <Table>
               <thead>
-                <tr className="text-left text-gray-500">
-                  <th className="p-2">Name</th>
-                  <th className="p-2">Type</th>
-                  <th className="p-2">Required</th>
-                  <th className="p-2">Example</th>
-                  <th className="p-2">Description</th>
+                <tr>
+                  <Th>Name</Th>
+                  <Th>Type</Th>
+                  <Th>Required</Th>
+                  <Th>Example</Th>
+                  <Th>Description</Th>
                 </tr>
               </thead>
               <tbody>
                 {parameters.map((p, i) => (
-                  <tr key={p.name} className="border-t border-gray-100">
-                    <td className="p-2 font-mono">{p.name}</td>
-                    <td className="p-2">
-                      <select
+                  <Tr key={p.name}>
+                    <Td>
+                      <Badge variant="neutral">{p.name}</Badge>
+                    </Td>
+                    <Td>
+                      <Select
                         value={p.type}
                         onChange={(e) => updateParam(i, { type: e.target.value })}
-                        className="rounded border border-gray-300 px-1 py-0.5"
+                        className="w-auto py-1"
                       >
                         <option value="string">string</option>
                         <option value="integer">integer</option>
                         <option value="number">number</option>
                         <option value="boolean">boolean</option>
-                      </select>
-                    </td>
-                    <td className="p-2">
-                      <input
-                        type="checkbox"
-                        checked={p.required}
-                        onChange={(e) => updateParam(i, { required: e.target.checked })}
-                      />
-                    </td>
-                    <td className="p-2">{p.example}</td>
-                    <td className="p-2">
-                      <input
+                      </Select>
+                    </Td>
+                    <Td>
+                      <Checkbox checked={p.required} onChange={(e) => updateParam(i, { required: e.target.checked })} />
+                    </Td>
+                    <Td mono>{p.example}</Td>
+                    <Td>
+                      <Input
                         type="text"
                         value={p.description ?? ''}
                         onChange={(e) => updateParam(i, { description: e.target.value })}
-                        className="w-full rounded border border-gray-300 px-1 py-0.5"
+                        className="py-1"
                       />
-                    </td>
-                  </tr>
+                    </Td>
+                  </Tr>
                 ))}
               </tbody>
-            </table>
-          )}
-        </section>
+            </Table>
+          </TableWrapper>
+        )}
+      </section>
 
-        <section>
-          <h2 className="text-sm font-semibold text-gray-900 mb-2">Extraction</h2>
-          <ExtractionEditor extraction={extraction} onChange={setExtraction} />
-        </section>
+      <section className="mb-8">
+        <h2 className="text-h2 mb-2">Extraction</h2>
+        <ExtractionEditor extraction={extraction} onChange={setExtraction} />
+      </section>
 
-        <div className="flex items-center gap-3">
-          <button
-            type="button"
-            onClick={handleSave}
-            disabled={saving}
-            className="rounded-md bg-gray-900 px-4 py-2 text-sm font-medium text-white hover:bg-gray-800 disabled:opacity-50"
-          >
-            {saving ? 'Saving…' : 'Save changes'}
-          </button>
-          {workflow.status === 'ready' && (
-            <button
-              type="button"
-              onClick={handlePublish}
-              disabled={publishing}
-              className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-500 disabled:opacity-50"
-            >
-              {publishing ? 'Publishing…' : 'Publish as API'}
-            </button>
-          )}
-        </div>
-      </main>
-    </div>
+      <div className="flex items-center gap-3">
+        <Button variant="primary" onClick={handleSave} disabled={saving}>
+          {saving ? 'Saving…' : 'Save changes'}
+        </Button>
+        {workflow.status === 'ready' && (
+          <Button variant="ink" onClick={handlePublish} disabled={publishing}>
+            {publishing ? 'Publishing…' : 'Publish as API'}
+          </Button>
+        )}
+      </div>
+    </AppShell>
   )
 }

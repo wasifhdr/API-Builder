@@ -1,8 +1,32 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import AdminNav from '../components/AdminNav'
+import AppShell from '../components/AppShell'
+import {
+  Badge,
+  type BadgeVariant,
+  Button,
+  buttonClasses,
+  CapsLabel,
+  EmptyRow,
+  Input,
+  PageHeader,
+  Table,
+  TableWrapper,
+  Td,
+  Th,
+  Tr,
+} from '../components/ui'
 import { ApiError, api } from '../lib/api'
-import type { AdminTransaction } from '../lib/types'
+import type { AdminTransaction, PaymentStatus } from '../lib/types'
+
+const STATUS_BADGE: Record<PaymentStatus, BadgeVariant> = {
+  pending: 'pending',
+  submitted: 'pending',
+  verified: 'success',
+  rejected: 'failed',
+  expired: 'neutral',
+}
 
 export default function AdminTransactions() {
   const [transactions, setTransactions] = useState<AdminTransaction[]>([])
@@ -39,79 +63,71 @@ export default function AdminTransactions() {
   }
 
   return (
-    <div className="min-h-screen bg-white">
-      <header className="border-b border-gray-200 px-6 py-4">
-        <Link to="/dashboard" className="text-sm text-gray-600 hover:text-gray-900">
-          &larr; Dashboard
-        </Link>
-      </header>
+    <AppShell>
+      <Link to="/dashboard" className={buttonClasses('ghost', 'sm', 'mb-4')}>
+        &larr; Dashboard
+      </Link>
+      <PageHeader eyebrow={<CapsLabel>Admin</CapsLabel>} title="Transactions" />
       <AdminNav />
-      <main className="p-6 space-y-4">
-        <h1 className="text-lg font-semibold text-gray-900">Transactions</h1>
-        {error && <p className="text-red-600 text-sm">{error}</p>}
-        {transactions.length === 0 && <p className="text-sm text-gray-400">No transactions yet.</p>}
-        {transactions.length > 0 && (
-          <table className="w-full text-xs border border-gray-200 rounded-md">
-            <thead>
-              <tr className="text-left text-gray-500">
-                <th className="p-2">Status</th>
-                <th className="p-2">Purpose</th>
-                <th className="p-2">Amount</th>
-                <th className="p-2">TrxID</th>
-                <th className="p-2">Method</th>
-                <th className="p-2">Note</th>
-                <th className="p-2">Created</th>
-                <th className="p-2">Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {transactions.map((t) => (
-                <tr key={t.id} className="border-t border-gray-100">
-                  <td className="p-2 uppercase font-medium">{t.status}</td>
-                  <td className="p-2">{t.purpose === 'subscription' ? t.plan_tier : 'api_access'}</td>
-                  <td className="p-2">
-                    ৳{t.amount_expected_bdt}
-                    {t.amount_received_bdt && t.amount_received_bdt !== t.amount_expected_bdt && (
-                      <span className="text-gray-400"> (recv ৳{t.amount_received_bdt})</span>
-                    )}
-                  </td>
-                  <td className="p-2 font-mono">{t.bkash_trx_id ?? '—'}</td>
-                  <td className="p-2">{t.verification_method ?? '—'}</td>
-                  <td className="p-2 text-amber-600">{t.note ?? ''}</td>
-                  <td className="p-2">{new Date(t.created_at).toLocaleString()}</td>
-                  <td className="p-2">
-                    {(t.status === 'pending' || t.status === 'submitted') && (
-                      <div className="flex gap-1 items-center">
-                        <button
-                          type="button"
-                          onClick={() => verify(t.id)}
-                          className="rounded bg-green-600 text-white px-2 py-0.5"
-                        >
-                          Verify
-                        </button>
-                        <input
-                          type="text"
-                          placeholder="reason"
-                          value={noteInput[t.id] ?? ''}
-                          onChange={(e) => setNoteInput((prev) => ({ ...prev, [t.id]: e.target.value }))}
-                          className="w-20 rounded border border-gray-300 px-1"
-                        />
-                        <button
-                          type="button"
-                          onClick={() => reject(t.id)}
-                          className="rounded bg-red-600 text-white px-2 py-0.5"
-                        >
-                          Reject
-                        </button>
-                      </div>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
-      </main>
-    </div>
+
+      {error && <p className="mb-4 text-sm font-medium text-red-deep">{error}</p>}
+
+      <TableWrapper>
+        <Table>
+          <thead>
+            <tr>
+              <Th>Status</Th>
+              <Th>Purpose</Th>
+              <Th>Amount</Th>
+              <Th>TrxID</Th>
+              <Th>Method</Th>
+              <Th>Note</Th>
+              <Th>Created</Th>
+              <Th>Actions</Th>
+            </tr>
+          </thead>
+          <tbody>
+            {transactions.length === 0 && <EmptyRow colSpan={8}>No transactions yet.</EmptyRow>}
+            {transactions.map((t) => (
+              <Tr key={t.id}>
+                <Td>
+                  <Badge variant={STATUS_BADGE[t.status]}>{t.status}</Badge>
+                </Td>
+                <Td>{t.purpose === 'subscription' ? t.plan_tier : 'api_access'}</Td>
+                <Td mono>
+                  ৳{t.amount_expected_bdt}
+                  {t.amount_received_bdt && t.amount_received_bdt !== t.amount_expected_bdt && (
+                    <span className="text-ink/50"> (recv ৳{t.amount_received_bdt})</span>
+                  )}
+                </Td>
+                <Td mono>{t.bkash_trx_id ?? '—'}</Td>
+                <Td>{t.verification_method ?? '—'}</Td>
+                <Td className="text-gold-deep">{t.note ?? ''}</Td>
+                <Td>{new Date(t.created_at).toLocaleString()}</Td>
+                <Td>
+                  {(t.status === 'pending' || t.status === 'submitted') && (
+                    <div className="flex items-center gap-1.5">
+                      <Button variant="primary" size="sm" onClick={() => verify(t.id)}>
+                        Verify
+                      </Button>
+                      <Input
+                        type="text"
+                        placeholder="reason"
+                        value={noteInput[t.id] ?? ''}
+                        onChange={(e) => setNoteInput((prev) => ({ ...prev, [t.id]: e.target.value }))}
+                        className="w-24 py-1"
+                      />
+                      <Button variant="danger" size="sm" onClick={() => reject(t.id)}>
+                        Reject
+                      </Button>
+                    </div>
+                  )}
+                </Td>
+              </Tr>
+            ))}
+          </tbody>
+        </Table>
+      </TableWrapper>
+    </AppShell>
   )
 }

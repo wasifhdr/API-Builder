@@ -1,5 +1,7 @@
 import { type FormEvent, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
+import AppShell from '../components/AppShell'
+import { Button, buttonClasses, CapsLabel, cardClasses, FieldLabel, Input } from '../components/ui'
 import { api, ApiError } from '../lib/api'
 
 export default function RecorderStart() {
@@ -31,47 +33,55 @@ export default function RecorderStart() {
   }
 
   return (
-    <div className="min-h-screen bg-white">
-      <header className="border-b border-gray-200 px-6 py-4">
-        <Link to="/dashboard" className="text-sm text-gray-600 hover:text-gray-900">
-          &larr; Dashboard
-        </Link>
-      </header>
-      <main className="p-6 max-w-md">
-        <h1 className="text-lg font-semibold text-gray-900 mb-4">Record a new workflow</h1>
-        <form onSubmit={handleSubmit} className="space-y-4">
-          {error && <p className="text-red-600 text-sm">{error}</p>}
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Name</label>
-            <input
-              type="text"
-              required
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm"
-              placeholder="e.g. Rokomari book search"
-            />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Starting URL</label>
-            <input
-              type="url"
-              required
-              value={startUrl}
-              onChange={(e) => setStartUrl(e.target.value)}
-              className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm"
-              placeholder="https://example.com"
-            />
-          </div>
-          <button
-            type="submit"
-            disabled={submitting}
-            className="rounded-md bg-gray-900 px-4 py-2 text-sm font-medium text-white hover:bg-gray-800 disabled:opacity-50"
-          >
-            {submitting ? 'Starting…' : 'Start recording'}
-          </button>
-        </form>
-      </main>
-    </div>
+    <AppShell>
+      <Link to="/dashboard" className={buttonClasses('ghost', 'sm', 'mb-4')}>
+        &larr; Dashboard
+      </Link>
+      <div className="mx-auto max-w-md">
+        <div className={cardClasses({ variant: 'feature' })}>
+          <CapsLabel className="mb-1">New recording</CapsLabel>
+          <h1 className="text-h1 mb-4">Record a workflow</h1>
+
+          <form onSubmit={handleSubmit} className="space-y-4">
+            {error && <p className="text-sm font-medium text-red-deep">{error}</p>}
+            <div>
+              <FieldLabel htmlFor="wf-name">Name</FieldLabel>
+              <Input
+                id="wf-name"
+                type="text"
+                required
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="e.g. Rokomari book search"
+              />
+            </div>
+            <div>
+              <FieldLabel htmlFor="wf-url">Starting URL</FieldLabel>
+              <Input
+                id="wf-url"
+                type="url"
+                required
+                value={startUrl}
+                onChange={(e) => setStartUrl(e.target.value)}
+                placeholder="https://example.com"
+              />
+            </div>
+            <Button type="submit" variant="primary" disabled={submitting} className="w-full justify-center">
+              {submitting ? 'Starting…' : 'Start recording'}
+            </Button>
+          </form>
+        </div>
+
+        <div className={`${cardClasses({ variant: 'callout', accent: 'gold' })} mt-6`}>
+          <CapsLabel tone="gold" className="mb-1">
+            Heads up
+          </CapsLabel>
+          <p className="text-sm text-ink/80">
+            A real Chromium window will open on this machine&apos;s desktop. Browse the site there —
+            every click, fill, and navigation is recorded live on the next screen.
+          </p>
+        </div>
+      </div>
+    </AppShell>
   )
 }

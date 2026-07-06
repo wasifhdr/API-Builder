@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
+import { Badge, Button, buttonClasses, Card, PageLoading } from '../components/ui'
 import { useSession } from '../hooks/useSession'
 import { ApiError, api } from '../lib/api'
 import type { AcceptInviteResult, InvitePreview } from '../lib/types'
@@ -36,59 +37,56 @@ export default function InviteAccept() {
     }
   }
 
-  if (loading || (!preview && !error)) {
-    return <div className="min-h-screen flex items-center justify-center bg-white text-gray-500">Loading…</div>
-  }
+  if (loading || (!preview && !error)) return <PageLoading />
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-white px-4">
-      <div className="max-w-sm w-full text-center space-y-4">
-        <h1 className="text-xl font-semibold text-gray-900">API invite</h1>
+    <div className="grid min-h-screen place-items-center bg-cream px-4">
+      <Card variant="feature" className="w-full max-w-sm text-center">
+        <p className="mb-1 text-label uppercase text-orange-deep">Invite</p>
+        <h1 className="font-display text-display-sm mb-4">API access</h1>
 
-        {error && <p className="text-red-600 text-sm">{error}</p>}
+        {error && <p className="mb-3 text-sm font-medium text-red-deep">{error}</p>}
 
         {preview && (
           <>
-            <p className="text-gray-700">
-              You've been invited to use <span className="font-semibold">{preview.api_name}</span>
-              {preview.price_bdt && <> for <span className="font-semibold">৳{preview.price_bdt}</span></>}.
+            <p className="mb-4 text-ink/80">
+              You&apos;ve been invited to use <span className="font-bold">{preview.api_name}</span>
+              {preview.price_bdt && (
+                <>
+                  {' '}
+                  for <span className="font-mono font-bold">৳{preview.price_bdt}</span>
+                </>
+              )}
+              .
             </p>
 
-            {!preview.valid && <p className="text-red-600 text-sm">{preview.reason}</p>}
+            {!preview.valid && <p className="mb-3 text-sm font-medium text-red-deep">{preview.reason}</p>}
 
             {preview.valid && !result && (
               <>
                 {!user ? (
-                  <a
-                    href="/api/auth/login"
-                    className="inline-block rounded-md bg-gray-900 px-5 py-2.5 text-white font-medium hover:bg-gray-800"
-                  >
+                  <a href="/api/auth/login" className={buttonClasses('primary', 'md', 'w-full justify-center')}>
                     Sign in with Google to accept
                   </a>
                 ) : (
-                  <button
-                    type="button"
-                    onClick={accept}
-                    disabled={accepting}
-                    className="rounded-md bg-gray-900 px-5 py-2.5 text-white font-medium hover:bg-gray-800 disabled:opacity-50"
-                  >
+                  <Button variant="primary" onClick={accept} disabled={accepting} className="w-full justify-center">
                     {accepting ? 'Accepting…' : 'Accept invite'}
-                  </button>
+                  </Button>
                 )}
               </>
             )}
 
             {result?.status === 'granted' && (
-              <div className="space-y-2">
-                <p className="text-green-600 text-sm">Access granted!</p>
-                <Link to="/keys" className="text-sm text-blue-600 hover:text-blue-800">
+              <div className="space-y-3">
+                <Badge variant="success">Access granted</Badge>
+                <Link to="/keys" className="block text-sm font-bold text-orange-deep hover:text-orange">
                   Create an API key &rarr;
                 </Link>
               </div>
             )}
           </>
         )}
-      </div>
+      </Card>
     </div>
   )
 }

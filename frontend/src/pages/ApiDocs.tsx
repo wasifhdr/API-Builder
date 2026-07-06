@@ -1,5 +1,7 @@
 import { useEffect } from 'react'
 import { Link, useParams } from 'react-router-dom'
+import AppShell from '../components/AppShell'
+import { buttonClasses, CapsLabel } from '../components/ui'
 
 const SCALAR_SCRIPT_ID = 'scalar-cdn-script'
 
@@ -26,13 +28,18 @@ export default function ApiDocs() {
   }, [slug])
 
   return (
-    <div className="min-h-screen bg-white">
-      <header className="border-b border-gray-200 px-6 py-4">
-        <Link to="/dashboard" className="text-sm text-gray-600 hover:text-gray-900">
-          &larr; Dashboard
-        </Link>
-      </header>
-      <div id="api-reference" data-url={`/v1/apis/${slug}/openapi.json`} />
-    </div>
+    <AppShell>
+      <Link to="/dashboard" className={buttonClasses('ghost', 'sm', 'mb-4')}>
+        &larr; Dashboard
+      </Link>
+      <div className="mb-6">
+        <CapsLabel>API Reference</CapsLabel>
+        <h1 className="font-display text-display-sm">{slug}</h1>
+      </div>
+      {/* Scalar's embedded reference UI manages its own (dark) theme internally. */}
+      <div className="-mx-6 -mb-8 overflow-hidden rounded-t-card border-2 border-ink">
+        <div id="api-reference" data-url={`/v1/apis/${slug}/openapi.json`} />
+      </div>
+    </AppShell>
   )
 }
