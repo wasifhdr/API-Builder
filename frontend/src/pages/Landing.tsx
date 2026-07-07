@@ -123,7 +123,7 @@ function AuthCard() {
   const usernameBlocked = availability === 'taken' || availability === 'invalid'
 
   return (
-    <Card variant="feature" className="mx-auto mt-10 w-full max-w-sm text-left">
+    <Card variant="feature" className="w-full max-w-sm text-left">
       <h2 className="text-h2 mb-4 text-center">
         {mode === 'login' ? 'Sign in' : 'Create your account'}
       </h2>
@@ -254,17 +254,19 @@ export default function Landing() {
           </p>
         </div>
 
-        <AuthCard />
-      </section>
+        <div className="mx-auto mt-12 grid max-w-4xl items-start gap-8 md:grid-cols-2">
+          <div className="space-y-5">
+            {FEATURES.map((f) => (
+              <Card key={f.title} variant="standard" accent={f.accent}>
+                <h2 className="text-h2">{f.title}</h2>
+                <p className="mt-2 text-sm text-ink/70">{f.description}</p>
+              </Card>
+            ))}
+          </div>
 
-      <section className="mx-auto max-w-5xl px-6 pb-24">
-        <div className="grid gap-5 md:grid-cols-3">
-          {FEATURES.map((f) => (
-            <Card key={f.title} variant="standard" accent={f.accent}>
-              <h2 className="text-h2">{f.title}</h2>
-              <p className="mt-2 text-sm text-ink/70">{f.description}</p>
-            </Card>
-          ))}
+          <div className="flex justify-center">
+            <AuthCard />
+          </div>
         </div>
       </section>
 
