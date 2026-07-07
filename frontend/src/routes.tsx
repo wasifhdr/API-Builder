@@ -2,8 +2,10 @@ import type { ReactNode } from 'react'
 import { Navigate, Route, Routes } from 'react-router-dom'
 import { PageLoading } from './components/ui'
 import { useSession } from './hooks/useSession'
+import AdminApis from './pages/AdminApis'
 import AdminAudit from './pages/AdminAudit'
 import AdminControls from './pages/AdminControls'
+import AdminOverview from './pages/AdminOverview'
 import AdminPlans from './pages/AdminPlans'
 import AdminSms from './pages/AdminSms'
 import AdminTransactions from './pages/AdminTransactions'
@@ -141,6 +143,18 @@ export default function AppRoutes() {
         }
       />
       <Route
+        path="/admin"
+        element={<Navigate to="/admin/overview" replace />}
+      />
+      <Route
+        path="/admin/overview"
+        element={
+          <RequireSuperAdmin>
+            <AdminOverview />
+          </RequireSuperAdmin>
+        }
+      />
+      <Route
         path="/admin/transactions"
         element={
           <RequireSuperAdmin>
@@ -161,6 +175,14 @@ export default function AppRoutes() {
         element={
           <RequireSuperAdmin>
             <AdminUsers />
+          </RequireSuperAdmin>
+        }
+      />
+      <Route
+        path="/admin/apis"
+        element={
+          <RequireSuperAdmin>
+            <AdminApis />
           </RequireSuperAdmin>
         }
       />

@@ -23,7 +23,14 @@ import {
 } from '../components/ui'
 import { useSession } from '../hooks/useSession'
 import { ApiError, api } from '../lib/api'
-import type { AdminKey, AdminUser, AdminUserUpdate, PlanTier, UserRole } from '../lib/types'
+import type { AdminKey, AdminUser, AdminUserUpdate, AdminWorkflow, PlanTier, UserRole } from '../lib/types'
+
+const WORKFLOW_BADGE: Record<AdminWorkflow['status'], BadgeVariant> = {
+  recording: 'info',
+  draft: 'neutral',
+  ready: 'success',
+  archived: 'neutral',
+}
 
 const TIERS: PlanTier[] = ['free', 'pro', 'max']
 const TIER_BADGE: Record<PlanTier, BadgeVariant> = { free: 'neutral', pro: 'info', max: 'purple' }
@@ -60,6 +67,9 @@ function UserRow({ user, isSelf, expanded, onToggle, onChanged }: RowProps) {
   const [relabelId, setRelabelId] = useState<string | null>(null)
   const [relabelValue, setRelabelValue] = useState('')
 
+  const [workflows, setWorkflows] = useState<AdminWorkflow[]>([])
+  const [workflowsError, setWorkflowsError] = useState<string | null>(null)
+
   const suspended = user.suspended_at !== null
 
   useEffect(() => {
@@ -74,10 +84,31 @@ function UserRow({ user, isSelf, expanded, onToggle, onChanged }: RowProps) {
       .catch((err) => setKeysError(errMessage(err, 'Failed to load keys')))
   }
 
+  function loadWorkflows() {
+    api
+      .get<AdminWorkflow[]>(`/admin/users/${user.id}/workflows`)
+      .then(setWorkflows)
+      .catch((err) => setWorkflowsError(errMessage(err, 'Failed to load workflows')))
+  }
+
   useEffect(() => {
-    if (expanded) loadKeys()
+    if (expanded) {
+      loadKeys()
+      loadWorkflows()
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [expanded])
+
+  async function deleteWorkflow(workflowId: string) {
+    setWorkflowsError(null)
+    try {
+      await api.delete(`/admin/workflows/${workflowId}`)
+      loadWorkflows()
+      onChanged()
+    } catch (err) {
+      setWorkflowsError(errMessage(err, 'Failed to delete workflow'))
+    }
+  }
 
   async function patch(body: AdminUserUpdate) {
     return api.patch<AdminUser>(`/admin/users/${user.id}`, body)
@@ -184,7 +215,7 @@ function UserRow({ user, isSelf, expanded, onToggle, onChanged }: RowProps) {
       {expanded && (
         <tr>
           <td colSpan={6} className="border-b border-sand bg-cream/40 px-4 py-4">
-            <div className="grid gap-4 md:grid-cols-2">
+            <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
               <div>
                 <h3 className="text-h3 mb-2">Details</h3>
                 <div className="mb-2">
@@ -321,6 +352,40 @@ function UserRow({ user, isSelf, expanded, onToggle, onChanged }: RowProps) {
                                   Revoke
                                 </Button>
                               )}
+                            </div>
+                          </Td>
+                        </Tr>
+                      ))}
+                    </tbody>
+                  </Table>
+                </TableWrapper>
+              </div>
+
+              <div>
+                <h3 className="text-h3 mb-2">Workflows</h3>
+                {workflowsError && <FieldError>{workflowsError}</FieldError>}
+                <TableWrapper>
+                  <Table>
+                    <thead>
+                      <tr>
+                        <Th>Name</Th>
+                        <Th>Status</Th>
+                        <Th />
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {workflows.length === 0 && <EmptyRow colSpan={3}>No workflows.</EmptyRow>}
+                      {workflows.map((w) => (
+                        <Tr key={w.id}>
+                          <Td>{w.name}</Td>
+                          <Td>
+                            <Badge variant={WORKFLOW_BADGE[w.status]}>{w.status}</Badge>
+                          </Td>
+                          <Td>
+                            <div className="flex justify-end">
+                              <Button size="sm" variant="danger-ghost" onClick={() => deleteWorkflow(w.id)}>
+                                Delete
+                              </Button>
                             </div>
                           </Td>
                         </Tr>

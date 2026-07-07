@@ -1,8 +1,10 @@
 import { NavLink } from 'react-router-dom'
 
 const TABS = [
+  { to: '/admin/overview', label: 'Overview' },
   { to: '/admin/users', label: 'Users' },
   { to: '/admin/controls', label: 'Admin Controls' },
+  { to: '/admin/apis', label: 'APIs' },
   { to: '/admin/plans', label: 'Plans' },
   { to: '/admin/transactions', label: 'Transactions' },
   { to: '/admin/sms', label: 'SMS feed' },

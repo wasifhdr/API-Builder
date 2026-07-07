@@ -4,8 +4,10 @@ from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.models.api import ApiVisibility, SpecStatus
 from app.models.billing import PaymentPurpose, PaymentStatus, PlanTier, SubscriptionStatus, VerificationMethod
 from app.models.user import UserRole
+from app.models.workflow import WorkflowStatus
 
 
 class AdminTransactionOut(BaseModel):
@@ -118,3 +120,48 @@ class AdminPlanUpdate(BaseModel):
     price_bdt: int | None = Field(default=None, ge=0)
     daily_creation_limit: int | None = None
     can_share: bool | None = None
+
+
+class AdminApiOut(BaseModel):
+    id: uuid.UUID
+    workflow_id: uuid.UUID
+    owner_id: uuid.UUID
+    owner_email: str
+    owner_username: str | None
+    slug: str
+    name: str
+    visibility: ApiVisibility
+    is_active: bool
+    spec_status: SpecStatus
+    execution_count: int
+    created_at: datetime
+
+
+class AdminApiUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    is_active: bool
+
+
+class AdminWorkflowOut(BaseModel):
+    id: uuid.UUID
+    name: str
+    status: WorkflowStatus
+    created_at: datetime
+
+
+class AdminStatsDayOut(BaseModel):
+    date: str
+    total: int
+    succeeded: int
+
+
+class AdminStatsOut(BaseModel):
+    total_users: int
+    new_users_7d: int
+    suspended_users: int
+    total_apis: int
+    active_apis: int
+    executions_by_day: list[AdminStatsDayOut]
+    success_rate_7d: float
+    revenue_verified_bdt: Decimal
+    pending_payments: int

@@ -292,3 +292,47 @@ export interface Session {
   ip: string | null
   current: boolean
 }
+
+export interface AdminApi {
+  id: string
+  workflow_id: string
+  owner_id: string
+  owner_email: string
+  owner_username: string | null
+  slug: string
+  name: string
+  visibility: 'private' | 'shared'
+  is_active: boolean
+  spec_status: SpecStatus
+  execution_count: number
+  created_at: string
+}
+
+export interface AdminApiUpdate {
+  is_active: boolean
+}
+
+export interface AdminWorkflow {
+  id: string
+  name: string
+  status: WorkflowStatus
+  created_at: string
+}
+
+export interface AdminStatsDay {
+  date: string
+  total: number
+  succeeded: number
+}
+
+export interface AdminStats {
+  total_users: number
+  new_users_7d: number
+  suspended_users: number
+  total_apis: number
+  active_apis: number
+  executions_by_day: AdminStatsDay[]
+  success_rate_7d: number
+  revenue_verified_bdt: string
+  pending_payments: number
+}

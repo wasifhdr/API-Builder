@@ -1,10 +1,12 @@
 import uuid
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import func, select
+from sqlalchemy import case, delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.core.deps import get_effective_tier, require_super_admin
 from app.db import get_db
 from app.models.api import ApiKey, CustomApi
@@ -18,22 +20,28 @@ from app.models.billing import (
     SubscriptionStatus,
     VerificationMethod,
 )
+from app.models.execution import ApiExecution, ExecutionStatus
 from app.models.plan_settings import PlanSettings
 from app.models.user import User, UserRole
 from app.models.workflow import Workflow
 from app.redis import redis_client
 from app.schemas.admin import (
+    AdminApiOut,
+    AdminApiUpdate,
     AdminAuditLogOut,
     AdminKeyOut,
     AdminKeyUpdate,
     AdminPlanOut,
     AdminPlanUpdate,
     AdminSmsOut,
+    AdminStatsDayOut,
+    AdminStatsOut,
     AdminSubscriptionOut,
     AdminTransactionOut,
     AdminUserDetailOut,
     AdminUserOut,
     AdminUserUpdate,
+    AdminWorkflowOut,
     RejectRequest,
 )
 from app.services import plans as plans_service
@@ -45,6 +53,15 @@ from app.services.sms_matcher import apply_verified_effects
 router = APIRouter(prefix="/admin", tags=["admin"], dependencies=[Depends(require_super_admin)])
 
 ADMIN_OVERRIDE_DAYS = 30
+
+
+def _dhaka_day(column):
+    """Truncates a UTC timestamp column to its Asia/Dhaka calendar day.
+
+    Mirrors `api/apis.py::_dhaka_day` exactly — kept as a local copy rather
+    than a shared import since each router owns its own query helpers here.
+    """
+    return func.date_trunc("day", func.timezone(settings.quota_tz, column))
 
 
 @router.get("/transactions", response_model=list[AdminTransactionOut])
@@ -506,4 +523,260 @@ async def update_plan_settings(
         daily_creation_limit=row.daily_creation_limit,
         can_share=row.can_share,
         updated_at=row.updated_at,
+    )
+
+
+# --- T6: moderation & platform stats ---
+
+
+@router.get("/apis", response_model=list[AdminApiOut])
+async def list_admin_apis(
+    search: str | None = None, db: AsyncSession = Depends(get_db)
+) -> list[AdminApiOut]:
+    exec_counts = select(
+        ApiExecution.api_id.label("api_id"), func.count().label("execution_count")
+    ).group_by(ApiExecution.api_id).subquery()
+
+    query = (
+        select(
+            CustomApi,
+            User.email.label("owner_email"),
+            User.username.label("owner_username"),
+            func.coalesce(exec_counts.c.execution_count, 0).label("execution_count"),
+        )
+        .join(User, User.id == CustomApi.owner_id)
+        .outerjoin(exec_counts, exec_counts.c.api_id == CustomApi.id)
+        .order_by(CustomApi.created_at.desc())
+    )
+
+    if search:
+        pattern = f"%{search.strip()}%"
+        query = query.where(
+            CustomApi.name.ilike(pattern)
+            | CustomApi.slug.ilike(pattern)
+            | User.email.ilike(pattern)
+            | User.username.ilike(pattern)
+        )
+
+    result = await db.execute(query)
+    out = []
+    for api, owner_email, owner_username, execution_count in result.all():
+        out.append(
+            AdminApiOut(
+                id=api.id,
+                workflow_id=api.workflow_id,
+                owner_id=api.owner_id,
+                owner_email=owner_email,
+                owner_username=owner_username,
+                slug=api.slug,
+                name=api.name,
+                visibility=api.visibility,
+                is_active=api.is_active,
+                spec_status=api.spec_status,
+                execution_count=execution_count,
+                created_at=api.created_at,
+            )
+        )
+    return out
+
+
+@router.patch("/apis/{api_id}", response_model=AdminApiOut)
+async def update_admin_api(
+    api_id: uuid.UUID,
+    body: AdminApiUpdate,
+    admin: User = Depends(require_super_admin),
+    db: AsyncSession = Depends(get_db),
+) -> AdminApiOut:
+    api = await db.get(CustomApi, api_id)
+    if api is None:
+        raise HTTPException(status_code=404, detail="api not found")
+
+    if body.is_active != api.is_active:
+        api.is_active = body.is_active
+        action = "api.activate" if body.is_active else "api.deactivate"
+        log_admin_action(db, admin, action, "api", api_id, {"is_active": body.is_active})
+
+    await db.commit()
+    await db.refresh(api)
+
+    owner = await db.get(User, api.owner_id)
+    execution_count = (
+        await db.execute(select(func.count()).where(ApiExecution.api_id == api.id))
+    ).scalar_one()
+
+    return AdminApiOut(
+        id=api.id,
+        workflow_id=api.workflow_id,
+        owner_id=api.owner_id,
+        owner_email=owner.email,
+        owner_username=owner.username,
+        slug=api.slug,
+        name=api.name,
+        visibility=api.visibility,
+        is_active=api.is_active,
+        spec_status=api.spec_status,
+        execution_count=execution_count,
+        created_at=api.created_at,
+    )
+
+
+@router.delete("/apis/{api_id}")
+async def delete_admin_api(
+    api_id: uuid.UUID,
+    admin: User = Depends(require_super_admin),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    api = await db.get(CustomApi, api_id)
+    if api is None:
+        raise HTTPException(status_code=404, detail="api not found")
+
+    owner = await db.get(User, api.owner_id)
+    log_admin_action(
+        db, admin, "api.delete", "api", api_id,
+        {"name": api.name, "slug": api.slug, "owner_email": owner.email if owner else None},
+    )
+    await db.commit()
+
+    # Core DELETE (not `session.delete`) so ON DELETE CASCADE foreign keys
+    # remove api_executions, api_access_grants, and api_invites rows for this
+    # API — see services/accounts.py::delete_user for the identical rationale.
+    await db.execute(delete(CustomApi).where(CustomApi.id == api_id))
+    await db.commit()
+    return {"ok": True}
+
+
+@router.get("/users/{user_id}/workflows", response_model=list[AdminWorkflowOut])
+async def list_user_workflows(user_id: uuid.UUID, db: AsyncSession = Depends(get_db)) -> list[Workflow]:
+    user = await db.get(User, user_id)
+    if user is None:
+        raise HTTPException(status_code=404, detail="user not found")
+    result = await db.execute(
+        select(Workflow).where(Workflow.user_id == user_id).order_by(Workflow.created_at.desc())
+    )
+    return list(result.scalars().all())
+
+
+@router.delete("/workflows/{workflow_id}")
+async def delete_admin_workflow(
+    workflow_id: uuid.UUID,
+    admin: User = Depends(require_super_admin),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    workflow = await db.get(Workflow, workflow_id)
+    if workflow is None:
+        raise HTTPException(status_code=404, detail="workflow not found")
+
+    # custom_apis.workflow_id is ON DELETE CASCADE (see models/api.py), so
+    # deleting a workflow that already has a published API cascades and takes
+    # the API (and, transitively, its executions/grants/invites) with it —
+    # matching the DB's own cascade contract rather than blocking. This is a
+    # deliberate choice: an admin explicitly deleting a workflow expects it
+    # gone, and the FK already encodes "an API cannot outlive its workflow."
+    log_admin_action(
+        db, admin, "workflow.delete", "workflow", workflow_id,
+        {"name": workflow.name, "owner_id": str(workflow.user_id)},
+    )
+    await db.commit()
+
+    await db.execute(delete(Workflow).where(Workflow.id == workflow_id))
+    await db.commit()
+    return {"ok": True}
+
+
+@router.get("/stats", response_model=AdminStatsOut)
+async def get_admin_stats(db: AsyncSession = Depends(get_db)) -> AdminStatsOut:
+    now = datetime.now(timezone.utc)
+    window_7d_start = now - timedelta(days=7)
+    tz = ZoneInfo(settings.quota_tz)
+    today_dhaka = now.astimezone(tz).date()
+    first_day_dhaka = today_dhaka - timedelta(days=13)
+
+    user_row = (
+        await db.execute(
+            select(
+                func.count().label("total_users"),
+                func.count(case((User.created_at >= window_7d_start, 1))).label("new_users_7d"),
+                func.count(case((User.suspended_at.is_not(None), 1))).label("suspended_users"),
+            )
+        )
+    ).one()
+
+    api_row = (
+        await db.execute(
+            select(
+                func.count().label("total_apis"),
+                func.count(case((CustomApi.is_active.is_(True), 1))).label("active_apis"),
+            )
+        )
+    ).one()
+
+    window_row = (
+        await db.execute(
+            select(
+                func.count().label("calls_7d"),
+                func.count(case((ApiExecution.status == ExecutionStatus.SUCCEEDED, 1))).label("succeeded_7d"),
+            ).where(ApiExecution.created_at >= window_7d_start)
+        )
+    ).one()
+    calls_7d = window_row.calls_7d or 0
+    succeeded_7d = window_row.succeeded_7d or 0
+    success_rate_7d = (succeeded_7d / calls_7d) if calls_7d else 0.0
+
+    day_bucket = _dhaka_day(ApiExecution.created_at)
+    day_rows = (
+        await db.execute(
+            select(
+                day_bucket.label("day"),
+                func.count().label("total"),
+                func.count(case((ApiExecution.status == ExecutionStatus.SUCCEEDED, 1))).label("succeeded"),
+            )
+            .where(
+                ApiExecution.created_at >= datetime(
+                    first_day_dhaka.year, first_day_dhaka.month, first_day_dhaka.day, tzinfo=tz
+                ),
+            )
+            .group_by(day_bucket)
+        )
+    ).all()
+    by_day = {row.day.date(): (row.total, row.succeeded) for row in day_rows}
+
+    executions_by_day: list[AdminStatsDayOut] = []
+    for offset in range(14):
+        day = first_day_dhaka + timedelta(days=offset)
+        total, succeeded = by_day.get(day, (0, 0))
+        executions_by_day.append(AdminStatsDayOut(date=day.isoformat(), total=total, succeeded=succeeded))
+
+    payment_row = (
+        await db.execute(
+            select(
+                func.coalesce(
+                    func.sum(
+                        case(
+                            (PaymentTransaction.status == PaymentStatus.VERIFIED,
+                             PaymentTransaction.amount_received_bdt),
+                        )
+                    ),
+                    0,
+                ).label("revenue_verified_bdt"),
+                func.count(
+                    case(
+                        (PaymentTransaction.status.in_(
+                            (PaymentStatus.PENDING, PaymentStatus.SUBMITTED)
+                        ), 1)
+                    )
+                ).label("pending_payments"),
+            )
+        )
+    ).one()
+
+    return AdminStatsOut(
+        total_users=user_row.total_users or 0,
+        new_users_7d=user_row.new_users_7d or 0,
+        suspended_users=user_row.suspended_users or 0,
+        total_apis=api_row.total_apis or 0,
+        active_apis=api_row.active_apis or 0,
+        executions_by_day=executions_by_day,
+        success_rate_7d=success_rate_7d,
+        revenue_verified_bdt=payment_row.revenue_verified_bdt,
+        pending_payments=payment_row.pending_payments or 0,
     )
