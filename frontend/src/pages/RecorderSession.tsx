@@ -5,12 +5,12 @@ import AppShell from '../components/AppShell'
 import ExtractionEditor from '../components/ExtractionEditor'
 import RecorderPipCard from '../components/RecorderPipCard'
 import RecorderStepList from '../components/RecorderStepList'
-import { Badge, Button, buttonClasses, cardClasses, StatChip } from '../components/ui'
+import { Badge, Button, buttonClasses, cardClasses, Spinner, StatChip } from '../components/ui'
 import { usePipWindow } from '../hooks/usePipWindow'
 import { api, ApiError } from '../lib/api'
 import { STATUS_BADGE, STATUS_LABEL } from '../lib/recorderStatus'
 import { useRecorder } from '../hooks/useRecorder'
-import type { ExtractionConfig } from '../lib/types'
+import type { ExtractionConfig, ParameterSuggestion } from '../lib/types'
 
 const EMPTY_EXTRACTION: ExtractionConfig = { mode: 'list', root: '', fields: [] }
 
@@ -26,12 +26,18 @@ export default function RecorderSession() {
     pickResult,
     extractionResult,
     warnings,
+    authoringPending,
+    parameterSuggestions,
+    extractionFieldSuggestions,
     undoStep,
     bringToFront,
     setMode,
     markParam,
     setExtraction,
     testExtraction,
+    suggestAuthoring,
+    dismissParameterSuggestion,
+    dismissExtractionFieldSuggestion,
     save,
     cancel,
   } = useRecorder(workflowId!)
@@ -83,6 +89,18 @@ export default function RecorderSession() {
   function useAsListRoot() {
     if (!pickResult?.generalized) return
     updateExtraction({ ...extraction, mode: 'list', root: pickResult.generalized })
+  }
+
+  function acceptParameterSuggestion(suggestion: ParameterSuggestion) {
+    markParam(suggestion.step_i, suggestion.name, suggestion.type, suggestion.description)
+  }
+
+  function acceptExtractionFieldSuggestion(selector: string, name: string, take: string, transform: string) {
+    updateExtraction({
+      ...extraction,
+      fields: extraction.fields.map((f) => (f.selector === selector ? { ...f, name, take, transform } : f)),
+    })
+    dismissExtractionFieldSuggestion(selector)
   }
 
   if (saved) {
@@ -212,8 +230,32 @@ export default function RecorderSession() {
       )}
 
       <section className="mb-8">
-        <h2 className="text-h2 mb-2">Steps</h2>
-        <RecorderStepList steps={steps} interactive={interactive} onUndo={undoStep} onMarkParam={markParam} />
+        <div className="mb-2 flex items-center justify-between">
+          <h2 className="text-h2">Steps</h2>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={suggestAuthoring}
+            disabled={!interactive || steps.length === 0 || authoringPending}
+          >
+            {authoringPending ? (
+              <>
+                <Spinner className="size-4" /> Thinking…
+              </>
+            ) : (
+              '✨ Suggest parameters'
+            )}
+          </Button>
+        </div>
+        <RecorderStepList
+          steps={steps}
+          interactive={interactive}
+          onUndo={undoStep}
+          onMarkParam={markParam}
+          suggestions={parameterSuggestions}
+          onAcceptSuggestion={acceptParameterSuggestion}
+          onDismissSuggestion={dismissParameterSuggestion}
+        />
       </section>
 
       <section className="mb-8">
@@ -233,6 +275,42 @@ export default function RecorderSession() {
           <pre className="mt-3 max-h-48 overflow-auto rounded-card border border-sand bg-cream p-3 text-xs">
             {JSON.stringify(extractionResult.sample, null, 2)}
           </pre>
+        )}
+        {extractionFieldSuggestions.length > 0 && (
+          <div className={`${cardClasses({ variant: 'callout', accent: 'gold' })} mt-3 space-y-2`}>
+            <p className="text-[11px] font-bold uppercase tracking-wide text-ink/60">✨ Suggested field names</p>
+            {extractionFieldSuggestions.map((suggestion) => (
+              <div key={suggestion.selector} className="flex flex-wrap items-center gap-2 text-sm">
+                <span className="font-mono text-xs text-ink/60">{suggestion.selector}</span>
+                <span>
+                  &rarr; <span className="font-bold">{suggestion.name}</span>{' '}
+                  <span className="text-ink/60">
+                    ({suggestion.take}
+                    {suggestion.transform !== 'none' && `, ${suggestion.transform}`})
+                  </span>
+                </span>
+                <div className="ml-auto flex items-center gap-2">
+                  <Button
+                    variant="ink"
+                    size="sm"
+                    onClick={() =>
+                      acceptExtractionFieldSuggestion(
+                        suggestion.selector,
+                        suggestion.name,
+                        suggestion.take,
+                        suggestion.transform,
+                      )
+                    }
+                  >
+                    Accept
+                  </Button>
+                  <Button variant="ghost" size="sm" onClick={() => dismissExtractionFieldSuggestion(suggestion.selector)}>
+                    Dismiss
+                  </Button>
+                </div>
+              </div>
+            ))}
+          </div>
         )}
       </section>
 

@@ -43,6 +43,27 @@ export interface ExtractionConfig {
   fields: ExtractionField[]
 }
 
+/** AI-suggested parameter for a recorded fill/select_option step — advisory
+ * only; accepting one sends the existing mark_param command. */
+export interface ParameterSuggestion {
+  step_i: number
+  name: string
+  type: string
+  example: string | null
+  description: string | null
+  confidence: number | null
+}
+
+/** AI-suggested name/take/transform for an extraction field, matched back to
+ * its selector — advisory only; accepting one updates the extraction config
+ * via the existing set_extraction command. */
+export interface ExtractionFieldSuggestion {
+  selector: string
+  name: string
+  take: string
+  transform: string
+}
+
 export type WorkflowStatus = 'recording' | 'draft' | 'ready' | 'archived'
 
 export interface WorkflowSummary {

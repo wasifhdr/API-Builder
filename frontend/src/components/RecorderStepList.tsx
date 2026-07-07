@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { describeStep } from '../lib/steps'
-import type { Step } from '../lib/types'
+import type { ParameterSuggestion, Step } from '../lib/types'
 
 const STEP_TONE: Record<Step['type'], string> = {
   goto: 'text-blue-soft',
@@ -17,6 +17,11 @@ interface RecorderStepListProps {
   interactive: boolean
   onUndo: (i: number) => void
   onMarkParam: (stepI: number, name: string) => void
+  /** AI-suggested parameters, keyed by step_i — optional so callers that don't
+   * offer suggestions (e.g. the pop-out PiP card) can omit these entirely. */
+  suggestions?: ParameterSuggestion[]
+  onAcceptSuggestion?: (suggestion: ParameterSuggestion) => void
+  onDismissSuggestion?: (stepI: number) => void
   /** Sizing — the page uses a fixed height, the pop-out card fills its column. */
   className?: string
 }
@@ -26,6 +31,9 @@ export default function RecorderStepList({
   interactive,
   onUndo,
   onMarkParam,
+  suggestions = [],
+  onAcceptSuggestion,
+  onDismissSuggestion,
   className = 'h-72',
 }: RecorderStepListProps) {
   const [paramFormFor, setParamFormFor] = useState<number | null>(null)
@@ -57,6 +65,7 @@ export default function RecorderStepList({
       {steps.map((step) => {
         const isValueStep = step.type === 'fill' || step.type === 'select_option'
         const isParam = step.value && 'param' in step.value
+        const suggestion = isValueStep && !isParam ? suggestions.find((sg) => sg.step_i === step.i) : undefined
         return (
           <div key={step.i} className="border-b border-cream/10 py-1.5 last:border-0">
             <div className="flex items-center justify-between gap-2">
@@ -65,7 +74,7 @@ export default function RecorderStepList({
                 <span className="text-cream/90">{describeStep(step)}</span>
               </span>
               <div className="flex shrink-0 items-center gap-2">
-                {isValueStep && !isParam && paramFormFor !== step.i && (
+                {isValueStep && !isParam && !suggestion && paramFormFor !== step.i && (
                   <button
                     type="button"
                     onClick={() => setParamFormFor(step.i)}
@@ -85,6 +94,32 @@ export default function RecorderStepList({
                 </button>
               </div>
             </div>
+            {suggestion && (
+              <div className="mt-2 flex flex-wrap items-center gap-2 rounded-control border border-gold/40 bg-gold/10 px-2 py-1.5">
+                <span className="text-[11px] text-gold">✨ Suggested:</span>
+                <span className="font-bold text-cream">
+                  {suggestion.name} <span className="font-normal text-cream/60">({suggestion.type})</span>
+                </span>
+                {suggestion.description && <span className="text-cream/60">— {suggestion.description}</span>}
+                <div className="ml-auto flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => onAcceptSuggestion?.(suggestion)}
+                    disabled={!interactive}
+                    className="rounded-pill bg-gold px-2 py-0.5 text-[11px] font-bold text-ink disabled:opacity-40"
+                  >
+                    Accept
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onDismissSuggestion?.(step.i)}
+                    className="text-[11px] text-cream/60 hover:text-cream"
+                  >
+                    Dismiss
+                  </button>
+                </div>
+              </div>
+            )}
             {paramFormFor === step.i && (
               <div className="mt-2 flex items-center gap-2">
                 <input

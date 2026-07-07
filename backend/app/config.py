@@ -40,6 +40,10 @@ class Settings(BaseSettings):
 
     llama_base_url: str = "http://127.0.0.1:8080/v1"
     llm_enabled: bool = True
+    llm_provider: str = "llama"
+    craftx_base_url: str = ""
+    craftx_api_key: str = ""
+    craftx_model: str = ""
 
     @property
     def admin_email_set(self) -> set[str]:

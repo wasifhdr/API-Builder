@@ -8,10 +8,13 @@ from pathlib import Path
 
 from playwright.async_api import BrowserContext, Page, async_playwright
 
+from app.config import settings
 from app.core.security import encrypt_bytes
 from app.db import async_session
+from app.llm.authoring import suggest_extraction_fields, suggest_parameters
 from app.models.user import User
 from app.models.workflow import Workflow, WorkflowStatus
+from app.recorder.constants import RECORDED_EVENT_TYPES, VALUE_STEP_TYPES
 from app.recorder.extraction import run_extraction
 from app.recorder.profiles import get_profile_dir
 from app.recorder.schema_infer import infer_schema
@@ -26,8 +29,7 @@ HARD_CAP_SECONDS = 30 * 60
 HEARTBEAT_TTL_SECONDS = 15
 HEARTBEAT_INTERVAL_SECONDS = 5
 
-RECORDED_EVENT_TYPES = {"click", "fill", "press", "select_option"}
-VALUE_STEP_TYPES = {"fill", "select_option"}
+VALID_PARAM_TYPES = {"string", "integer", "number", "boolean"}
 
 
 class RecordingSession:
@@ -52,6 +54,7 @@ class RecordingSession:
         self._cancelled = False
         self._warned_popup = False
         self._warned_iframes = False
+        self._authoring_task: asyncio.Task | None = None
 
     @property
     def evt_channel(self) -> str:
@@ -160,9 +163,12 @@ class RecordingSession:
         try:
             await self._stop.wait()
         finally:
-            for t in tasks:
+            all_tasks = list(tasks)
+            if self._authoring_task is not None:
+                all_tasks.append(self._authoring_task)
+            for t in all_tasks:
                 t.cancel()
-            await asyncio.gather(*tasks, return_exceptions=True)
+            await asyncio.gather(*all_tasks, return_exceptions=True)
 
             if not self._cancelled:
                 await self._capture_recorded_viewport()
@@ -325,6 +331,8 @@ class RecordingSession:
                 self.extraction["main"] = config
         elif ctype == "test_extraction":
             await self._handle_test_extraction()
+        elif ctype == "suggest_authoring":
+            self._start_authoring_task()
         elif ctype == "save":
             self._save_requested = cmd
             self._stop.set()
@@ -345,15 +353,24 @@ class RecordingSession:
         if step.get("type") not in VALUE_STEP_TYPES or not isinstance(step.get("value"), dict):
             return
 
+        # type/description are optional — set when accepting an AI suggestion
+        # (§ AI-assisted authoring); a bare command behaves exactly as before.
+        ptype = cmd.get("type")
+        if ptype not in VALID_PARAM_TYPES:
+            ptype = "string"
+        description = cmd.get("description")
+        if not isinstance(description, str):
+            description = None
+
         literal = step["value"].get("literal")
         step["value"] = {"param": name}
         self.parameters = [p for p in self.parameters if p["name"] != name]
         self.parameters.append({
             "name": name,
-            "type": "string",
+            "type": ptype,
             "required": True,
             "example": literal,
-            "description": None,
+            "description": description,
             "source_step": step_i,
         })
         await self._publish({"t": "param_marked", "parameter": self.parameters[-1], "step": step})
@@ -369,6 +386,46 @@ class RecordingSession:
             await self._publish({"t": "extraction_result", "sample": sample, "schema": schema})
         except Exception as exc:
             await self._publish({"t": "error", "message": f"extraction failed: {exc}"})
+
+    def _start_authoring_task(self) -> None:
+        if self._authoring_task is not None and not self._authoring_task.done():
+            return  # a suggestion request is already in flight — ignore repeats
+        self._authoring_task = asyncio.create_task(self._run_authoring_suggestions())
+
+    async def _run_authoring_suggestions(self) -> None:
+        """Suggests parameters and extraction field names via the LLM
+        (§ AI-assisted authoring, docs/AI_AUTHORING_PLAN.md). Every suggestion
+        is advisory: acceptance flows through the existing mark_param /
+        set_extraction commands, never a second write path. This must never
+        propagate an exception — a failed suggestion degrades to "no
+        suggestions", not a crashed recording session."""
+        if not settings.llm_enabled:
+            await self._publish({"t": "error", "message": "AI suggestions are disabled on this server."})
+            return
+
+        parameters: list[dict] = []
+        extraction_fields: list[dict] = []
+
+        try:
+            parameters = await suggest_parameters(self.steps)
+        except Exception as exc:
+            log.exception("parameter suggestion failed")
+            await self._publish({"t": "error", "message": f"Parameter suggestions failed: {exc}"})
+
+        try:
+            config = self.extraction.get("main")
+            if config and self.page is not None:
+                sample = await run_extraction(self.page, config)
+                extraction_fields = await suggest_extraction_fields(config, sample)
+        except Exception as exc:
+            log.exception("extraction field suggestion failed")
+            await self._publish({"t": "error", "message": f"Extraction field suggestions failed: {exc}"})
+
+        await self._publish({
+            "t": "authoring_suggestions",
+            "parameters": parameters,
+            "extraction_fields": extraction_fields,
+        })
 
     async def _finalize(self) -> None:
         async with async_session() as db:

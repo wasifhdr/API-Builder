@@ -1,5 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { ExtractionConfig, Parameter, PickCandidate, RecorderStatus, Step } from '../lib/types'
+import type {
+  ExtractionConfig,
+  ExtractionFieldSuggestion,
+  Parameter,
+  ParameterSuggestion,
+  PickCandidate,
+  RecorderStatus,
+  Step,
+} from '../lib/types'
 
 interface RecorderState {
   status: RecorderStatus
@@ -11,6 +19,9 @@ interface RecorderState {
   extractionResult: { sample: unknown; schema: unknown } | null
   parameters: Parameter[]
   warnings: string[]
+  authoringPending: boolean
+  parameterSuggestions: ParameterSuggestion[]
+  extractionFieldSuggestions: ExtractionFieldSuggestion[]
 }
 
 const RECONNECT_DELAY_MS = 2000
@@ -26,6 +37,9 @@ export function useRecorder(workflowId: string) {
     extractionResult: null,
     parameters: [],
     warnings: [],
+    authoringPending: false,
+    parameterSuggestions: [],
+    extractionFieldSuggestions: [],
   })
   const wsRef = useRef<WebSocket | null>(null)
   const reconnectTimer = useRef<number | null>(null)
@@ -51,7 +65,11 @@ export function useRecorder(workflowId: string) {
           setState((s) => ({ ...s, steps: [...s.steps, msg.step] }))
           break
         case 'step_removed':
-          setState((s) => ({ ...s, steps: s.steps.filter((step) => step.i !== msg.i) }))
+          setState((s) => ({
+            ...s,
+            steps: s.steps.filter((step) => step.i !== msg.i),
+            parameterSuggestions: s.parameterSuggestions.filter((sg) => sg.step_i !== msg.i),
+          }))
           break
         case 'pick_result':
           setState((s) => ({ ...s, pickResult: msg.candidate }))
@@ -64,10 +82,19 @@ export function useRecorder(workflowId: string) {
             ...s,
             parameters: [...s.parameters.filter((p) => p.name !== msg.parameter.name), msg.parameter],
             steps: s.steps.map((step) => (step.i === msg.step.i ? msg.step : step)),
+            parameterSuggestions: s.parameterSuggestions.filter((sg) => sg.step_i !== msg.step.i),
+          }))
+          break
+        case 'authoring_suggestions':
+          setState((s) => ({
+            ...s,
+            authoringPending: false,
+            parameterSuggestions: msg.parameters ?? [],
+            extractionFieldSuggestions: msg.extraction_fields ?? [],
           }))
           break
         case 'error':
-          setState((s) => ({ ...s, error: msg.message }))
+          setState((s) => ({ ...s, error: msg.message, authoringPending: false }))
           break
         case 'warning':
           setState((s) => ({ ...s, warnings: [...s.warnings, msg.message] }))
@@ -113,6 +140,22 @@ export function useRecorder(workflowId: string) {
     [send],
   )
 
+  const suggestAuthoring = useCallback(() => {
+    setState((s) => ({ ...s, authoringPending: true }))
+    send({ t: 'suggest_authoring' })
+  }, [send])
+
+  const dismissParameterSuggestion = useCallback((stepI: number) => {
+    setState((s) => ({ ...s, parameterSuggestions: s.parameterSuggestions.filter((sg) => sg.step_i !== stepI) }))
+  }, [])
+
+  const dismissExtractionFieldSuggestion = useCallback((selector: string) => {
+    setState((s) => ({
+      ...s,
+      extractionFieldSuggestions: s.extractionFieldSuggestions.filter((sg) => sg.selector !== selector),
+    }))
+  }, [])
+
   return {
     status: state.status,
     steps: state.steps,
@@ -123,12 +166,19 @@ export function useRecorder(workflowId: string) {
     extractionResult: state.extractionResult,
     parameters: state.parameters,
     warnings: state.warnings,
+    authoringPending: state.authoringPending,
+    parameterSuggestions: state.parameterSuggestions,
+    extractionFieldSuggestions: state.extractionFieldSuggestions,
     setMode,
     undoStep: (i: number) => send({ t: 'undo_step', i }),
     bringToFront: () => send({ t: 'bring_to_front' }),
-    markParam: (stepI: number, name: string) => send({ t: 'mark_param', step_i: stepI, name }),
+    markParam: (stepI: number, name: string, type?: string, description?: string | null) =>
+      send({ t: 'mark_param', step_i: stepI, name, type, description }),
     setExtraction: (config: ExtractionConfig) => send({ t: 'set_extraction', config }),
     testExtraction: () => send({ t: 'test_extraction' }),
+    suggestAuthoring,
+    dismissParameterSuggestion,
+    dismissExtractionFieldSuggestion,
     save: () => send({ t: 'save' }),
     cancel: () => send({ t: 'cancel' }),
   }
