@@ -22,6 +22,13 @@ class SpecStatus(str, enum.Enum):
     FAILED = "failed"
 
 
+class ApiPricingMode(str, enum.Enum):
+    FREE = "free"
+    ONE_TIME = "one_time"
+    PER_CALL = "per_call"
+    SUBSCRIPTION = "subscription"
+
+
 class CustomApi(Base, TimestampMixin):
     __tablename__ = "custom_apis"
 
@@ -36,6 +43,9 @@ class CustomApi(Base, TimestampMixin):
     visibility: Mapped[ApiVisibility] = mapped_column(
         enum_column(ApiVisibility), default=ApiVisibility.PRIVATE)
     price_bdt: Mapped[Decimal | None] = mapped_column(Numeric(10, 2))
+    pricing_mode: Mapped[ApiPricingMode] = mapped_column(
+        enum_column(ApiPricingMode), default=ApiPricingMode.FREE)
+    included_call_quota: Mapped[int | None] = mapped_column(Integer)  # subscription mode only (Phase W6)
     workflow_snapshot: Mapped[dict] = mapped_column(JSONB)
     openapi_spec: Mapped[dict | None] = mapped_column(JSONB)
     spec_status: Mapped[SpecStatus] = mapped_column(enum_column(SpecStatus), default=SpecStatus.PENDING)
@@ -96,3 +106,14 @@ class ApiInvite(Base, TimestampMixin):
     use_count: Mapped[int] = mapped_column(Integer, default=0)
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class ApiAllowedEmail(Base, TimestampMixin):
+    __tablename__ = "api_allowed_emails"
+    __table_args__ = (UniqueConstraint("api_id", "email", name="uq_allowed_email_api"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    api_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("custom_apis.id", ondelete="CASCADE"), index=True)
+    email: Mapped[str] = mapped_column(String(320), index=True)
+    added_by: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))

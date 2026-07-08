@@ -1,5 +1,6 @@
 import time
 from dataclasses import dataclass
+from decimal import Decimal
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -18,6 +19,10 @@ class PlanConfig:
     price_bdt: int
     daily_creation_limit: int | None  # None = unlimited
     can_share: bool
+    monthly_call_quota: int | None  # None = unlimited
+    platform_cut_pct: Decimal
+    can_cashout: bool
+    max_invitees_per_api: int | None  # None = unlimited
 
 
 def _defaults() -> dict[PlanTier, PlanConfig]:
@@ -25,9 +30,14 @@ def _defaults() -> dict[PlanTier, PlanConfig]:
     # database (created via Base.metadata.create_all, never seeded by migrations)
     # or a fresh dev DB before the seed migration has run.
     return {
-        PlanTier.FREE: PlanConfig(PlanTier.FREE, "Free", 0, 5, False),
-        PlanTier.PRO: PlanConfig(PlanTier.PRO, "Pro", settings.plan_price_pro_bdt, 50, True),
-        PlanTier.MAX: PlanConfig(PlanTier.MAX, "Max", settings.plan_price_max_bdt, None, True),
+        PlanTier.FREE: PlanConfig(
+            PlanTier.FREE, "Free", 0, 5, False, 100, Decimal("0"), False, 1),
+        PlanTier.PRO: PlanConfig(
+            PlanTier.PRO, "Pro", settings.plan_price_pro_bdt, 50, True,
+            5000, Decimal("25"), False, 25),
+        PlanTier.MAX: PlanConfig(
+            PlanTier.MAX, "Max", settings.plan_price_max_bdt, None, True,
+            50000, Decimal("10"), True, None),
     }
 
 
@@ -66,6 +76,10 @@ async def get_plans(db: AsyncSession) -> dict[PlanTier, PlanConfig]:
                 price_bdt=row.price_bdt,
                 daily_creation_limit=row.daily_creation_limit,
                 can_share=row.can_share,
+                monthly_call_quota=row.monthly_call_quota,
+                platform_cut_pct=row.platform_cut_pct,
+                can_cashout=row.can_cashout,
+                max_invitees_per_api=row.max_invitees_per_api,
             )
 
     _cache = plans

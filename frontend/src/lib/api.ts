@@ -2,10 +2,15 @@ const BASE = '/api'
 
 export class ApiError extends Error {
   status: number
+  /** The raw `detail` value from the response body — a string for simple
+   * errors, or a structured object (e.g. `{detail, shortfall_bdt}`) for
+   * errors that carry extra data like insufficient-balance shortfalls. */
+  body: unknown
 
-  constructor(status: number, message: string) {
+  constructor(status: number, message: string, body?: unknown) {
     super(message)
     this.status = status
+    this.body = body
   }
 }
 
@@ -17,8 +22,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   })
 
   if (!res.ok) {
-    const body = await res.json().catch(() => ({}))
-    throw new ApiError(res.status, body.detail ?? res.statusText)
+    const json = await res.json().catch(() => ({}))
+    const detail = json.detail
+    const message = typeof detail === 'string' ? detail : (detail?.detail ?? res.statusText)
+    throw new ApiError(res.status, message, detail)
   }
   if (res.status === 204) return undefined as T
   return res.json() as Promise<T>

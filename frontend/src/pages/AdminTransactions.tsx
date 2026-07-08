@@ -77,6 +77,7 @@ export default function AdminTransactions() {
           <thead>
             <tr>
               <Th>Status</Th>
+              <Th>User</Th>
               <Th>Purpose</Th>
               <Th>Amount</Th>
               <Th>TrxID</Th>
@@ -87,11 +88,15 @@ export default function AdminTransactions() {
             </tr>
           </thead>
           <tbody>
-            {transactions.length === 0 && <EmptyRow colSpan={8}>No transactions yet.</EmptyRow>}
+            {transactions.length === 0 && <EmptyRow colSpan={9}>No transactions yet.</EmptyRow>}
             {transactions.map((t) => (
               <Tr key={t.id}>
                 <Td>
                   <Badge variant={STATUS_BADGE[t.status]}>{t.status}</Badge>
+                </Td>
+                <Td>
+                  {t.user_email}
+                  {t.user_username && <span className="text-ink/60"> ({t.user_username})</span>}
                 </Td>
                 <Td>{t.purpose === 'subscription' ? t.plan_tier : 'api_access'}</Td>
                 <Td mono>

@@ -37,6 +37,7 @@ GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
 
 OAUTH_STATE_TTL_SECONDS = 600
 EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+INVITE_TOKEN_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
 
 def _request_meta(request: Request) -> tuple[str | None, str | None]:
@@ -46,9 +47,12 @@ def _request_meta(request: Request) -> tuple[str | None, str | None]:
 
 
 @router.get("/login")
-async def login() -> RedirectResponse:
+async def login(invite_token: str | None = None) -> RedirectResponse:
     state = secrets.token_urlsafe(24)
-    await redis_client.set(f"oauth:state:{state}", "1", ex=OAUTH_STATE_TTL_SECONDS)
+    # Stash the invite token (if any) alongside the oauth state so the callback can
+    # send brand-new signups back to the invite screen instead of the dashboard.
+    stashed = invite_token if invite_token and INVITE_TOKEN_PATTERN.match(invite_token) else "1"
+    await redis_client.set(f"oauth:state:{state}", stashed, ex=OAUTH_STATE_TTL_SECONDS)
 
     params = {
         "client_id": settings.google_client_id,
@@ -129,7 +133,8 @@ async def callback_google(
     user_agent, ip = _request_meta(request)
     sid = await create_session(redis_client, user.id, user_agent=user_agent, ip=ip)
 
-    response = RedirectResponse(f"{settings.frontend_origin}/dashboard")
+    destination = f"/invite/{stored}" if stored != "1" else "/dashboard"
+    response = RedirectResponse(f"{settings.frontend_origin}{destination}")
     set_session_cookie(response, sid)
     return response
 

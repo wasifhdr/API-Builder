@@ -23,6 +23,10 @@ interface EditState {
   price_bdt: string
   daily_creation_limit: string
   can_share: boolean
+  monthly_call_quota: string
+  platform_cut_pct: string
+  can_cashout: boolean
+  max_invitees_per_api: string
 }
 
 function toEditState(plan: AdminPlan): EditState {
@@ -30,7 +34,18 @@ function toEditState(plan: AdminPlan): EditState {
     price_bdt: String(plan.price_bdt),
     daily_creation_limit: plan.daily_creation_limit === null ? '' : String(plan.daily_creation_limit),
     can_share: plan.can_share,
+    monthly_call_quota: plan.monthly_call_quota === null ? '' : String(plan.monthly_call_quota),
+    platform_cut_pct: plan.platform_cut_pct,
+    can_cashout: plan.can_cashout,
+    max_invitees_per_api: plan.max_invitees_per_api === null ? '' : String(plan.max_invitees_per_api),
   }
+}
+
+function parseBlankableInt(value: string): number | null | 'invalid' {
+  if (value.trim() === '') return null
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed) || parsed < 0) return 'invalid'
+  return Math.trunc(parsed)
 }
 
 export default function AdminPlans() {
@@ -72,20 +87,43 @@ export default function AdminPlans() {
       return
     }
 
-    let dailyLimit: number | null = null
-    if (edit.daily_creation_limit.trim() !== '') {
-      const parsed = Number(edit.daily_creation_limit)
-      if (!Number.isFinite(parsed) || parsed < 0) {
-        setErrors((prev) => ({ ...prev, [plan.tier]: 'Daily limit must be a non-negative number or blank' }))
-        return
-      }
-      dailyLimit = Math.trunc(parsed)
+    const dailyLimit = parseBlankableInt(edit.daily_creation_limit)
+    if (dailyLimit === 'invalid') {
+      setErrors((prev) => ({ ...prev, [plan.tier]: 'Daily limit must be a non-negative number or blank' }))
+      return
+    }
+
+    const monthlyCallQuota = parseBlankableInt(edit.monthly_call_quota)
+    if (monthlyCallQuota === 'invalid') {
+      setErrors((prev) => ({ ...prev, [plan.tier]: 'Monthly call quota must be a non-negative number or blank' }))
+      return
+    }
+
+    const maxInvitees = parseBlankableInt(edit.max_invitees_per_api)
+    if (maxInvitees === 'invalid') {
+      setErrors((prev) => ({ ...prev, [plan.tier]: 'Max invitees must be a non-negative number or blank' }))
+      return
+    }
+
+    const cutPct = Number(edit.platform_cut_pct)
+    if (!Number.isFinite(cutPct) || cutPct < 0 || cutPct > 100) {
+      setErrors((prev) => ({ ...prev, [plan.tier]: 'Platform cut must be between 0 and 100' }))
+      return
+    }
+
+    if (plan.tier === 'free' && edit.can_cashout) {
+      setErrors((prev) => ({ ...prev, [plan.tier]: 'Free tier cannot cash out' }))
+      return
     }
 
     const body: AdminPlanUpdate = {
       price_bdt: Math.trunc(price),
       daily_creation_limit: dailyLimit,
       can_share: edit.can_share,
+      monthly_call_quota: monthlyCallQuota,
+      platform_cut_pct: String(cutPct),
+      can_cashout: edit.can_cashout,
+      max_invitees_per_api: maxInvitees,
     }
 
     setSaving((prev) => ({ ...prev, [plan.tier]: true }))
@@ -152,7 +190,45 @@ export default function AdminPlans() {
                 <p className="mt-1 text-xs text-ink/60">Leave blank for unlimited.</p>
               </div>
 
-              <div className="mb-4 flex items-center gap-2">
+              <div className="mb-3">
+                <FieldLabel htmlFor={`callquota-${plan.tier}`}>Calls included / month</FieldLabel>
+                <Input
+                  id={`callquota-${plan.tier}`}
+                  type="number"
+                  min={0}
+                  placeholder="unlimited"
+                  value={edit.monthly_call_quota}
+                  onChange={(e) => setField(plan.tier, 'monthly_call_quota', e.target.value)}
+                />
+                <p className="mt-1 text-xs text-ink/60">Leave blank for unlimited.</p>
+              </div>
+
+              <div className="mb-3">
+                <FieldLabel htmlFor={`cut-${plan.tier}`}>Platform cut of creator sales (%)</FieldLabel>
+                <Input
+                  id={`cut-${plan.tier}`}
+                  type="number"
+                  min={0}
+                  max={100}
+                  value={edit.platform_cut_pct}
+                  onChange={(e) => setField(plan.tier, 'platform_cut_pct', e.target.value)}
+                />
+              </div>
+
+              <div className="mb-3">
+                <FieldLabel htmlFor={`invitees-${plan.tier}`}>Invitees per API</FieldLabel>
+                <Input
+                  id={`invitees-${plan.tier}`}
+                  type="number"
+                  min={0}
+                  placeholder="unlimited"
+                  value={edit.max_invitees_per_api}
+                  onChange={(e) => setField(plan.tier, 'max_invitees_per_api', e.target.value)}
+                />
+                <p className="mt-1 text-xs text-ink/60">Leave blank for unlimited.</p>
+              </div>
+
+              <div className="mb-3 flex items-center gap-2">
                 <Checkbox
                   id={`share-${plan.tier}`}
                   checked={edit.can_share}
@@ -160,6 +236,18 @@ export default function AdminPlans() {
                 />
                 <FieldLabel htmlFor={`share-${plan.tier}`} className="mb-0">
                   Allow sharing &amp; invites
+                </FieldLabel>
+              </div>
+
+              <div className="mb-4 flex items-center gap-2">
+                <Checkbox
+                  id={`cashout-${plan.tier}`}
+                  disabled={isFree}
+                  checked={edit.can_cashout}
+                  onChange={(e) => setField(plan.tier, 'can_cashout', e.target.checked)}
+                />
+                <FieldLabel htmlFor={`cashout-${plan.tier}`} className="mb-0">
+                  Can cash out earnings to bKash
                 </FieldLabel>
               </div>
 

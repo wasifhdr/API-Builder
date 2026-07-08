@@ -6,10 +6,11 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.models.api import CustomApi
-from app.models.billing import PaymentPurpose, PaymentStatus, PaymentTransaction, PlanTier
+from app.models.billing import PaymentPurpose, PaymentStatus, PaymentTransaction
 from app.services import sms_matcher
-from app.services.plans import plan_for
+
+RECHARGE_MIN_BDT = Decimal("10")
+RECHARGE_MAX_BDT = Decimal("100000")
 
 
 class PaymentError(Exception):
@@ -23,38 +24,26 @@ async def create_intent(
     user_id: uuid.UUID,
     purpose: PaymentPurpose,
     db: AsyncSession,
-    plan_tier: PlanTier | None = None,
-    api_id: uuid.UUID | None = None,
-    is_super: bool = False,
+    amount_bdt: Decimal | None = None,
 ) -> PaymentTransaction:
-    if purpose == PaymentPurpose.SUBSCRIPTION:
-        if is_super:
-            raise PaymentError(400, "super admins don't need plans")
-        if plan_tier is None or plan_tier == PlanTier.FREE:
-            raise PaymentError(400, "plan_tier must be pro or max")
-        amount = Decimal((await plan_for(plan_tier, db)).price_bdt)
-        transaction = PaymentTransaction(
-            user_id=user_id,
-            purpose=purpose,
-            plan_tier=plan_tier,
-            amount_expected_bdt=amount,
-            status=PaymentStatus.PENDING,
+    """Creates a bKash payment intent. RECHARGE is the only purpose this can
+    still create — subscriptions and one-time API access are funded from the
+    wallet (see services/subscriptions.py and api/invites.py::accept_invite)
+    since Phase W2. The SUBSCRIPTION/API_ACCESS enum values remain only to
+    describe any pre-W2 transaction rows still being verified."""
+    if purpose != PaymentPurpose.RECHARGE:
+        raise PaymentError(400, "no longer a bKash purpose — fund your wallet and pay from it")
+
+    if amount_bdt is None or amount_bdt < RECHARGE_MIN_BDT or amount_bdt > RECHARGE_MAX_BDT:
+        raise PaymentError(
+            400, f"amount_bdt must be between {RECHARGE_MIN_BDT} and {RECHARGE_MAX_BDT}"
         )
-    else:
-        if api_id is None:
-            raise PaymentError(400, "api_id is required for api_access purpose")
-        api = await db.get(CustomApi, api_id)
-        if api is None:
-            raise PaymentError(404, "api not found")
-        if not api.price_bdt or api.price_bdt <= 0:
-            raise PaymentError(400, "this api is free — accept the invite directly")
-        transaction = PaymentTransaction(
-            user_id=user_id,
-            purpose=purpose,
-            api_id=api_id,
-            amount_expected_bdt=api.price_bdt,
-            status=PaymentStatus.PENDING,
-        )
+    transaction = PaymentTransaction(
+        user_id=user_id,
+        purpose=purpose,
+        amount_expected_bdt=amount_bdt,
+        status=PaymentStatus.PENDING,
+    )
 
     db.add(transaction)
     await db.commit()

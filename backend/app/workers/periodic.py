@@ -7,6 +7,7 @@ from sqlalchemy import select, text
 
 from app.config import settings
 from app.db import async_session
+from app.models.api import ApiAccessGrant
 from app.models.billing import PaymentStatus, PaymentTransaction, Subscription, SubscriptionStatus
 from app.models.execution import ApiExecution
 
@@ -44,12 +45,27 @@ async def sweep_once() -> None:
         for tx in expired_intents:
             tx.status = PaymentStatus.EXPIRED
 
+        # Subscription-mode API grants (Phase W6) carry an expires_at.
+        # has_access already denies a call the instant expires_at passes, so
+        # this is purely bookkeeping — it makes the owner's Grants list show
+        # "revoked" instead of a stale-looking active grant.
+        result = await db.execute(
+            select(ApiAccessGrant).where(
+                ApiAccessGrant.expires_at.is_not(None),
+                ApiAccessGrant.expires_at <= now,
+                ApiAccessGrant.revoked_at.is_(None),
+            )
+        )
+        lapsed_grants = list(result.scalars())
+        for g in lapsed_grants:
+            g.revoked_at = now
+
         await db.commit()
 
-        if expired_subs or expired_intents:
+        if expired_subs or expired_intents or lapsed_grants:
             log.info(
-                "sweep: expired %d subscriptions, %d payment intents",
-                len(expired_subs), len(expired_intents),
+                "sweep: expired %d subscriptions, %d payment intents, %d api grants",
+                len(expired_subs), len(expired_intents), len(lapsed_grants),
             )
 
         # Execution-log retention: keep only the most recent N rows per API,

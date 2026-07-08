@@ -77,6 +77,7 @@ export interface WorkflowSummary {
 
 export type SpecStatus = 'pending' | 'generating' | 'ready' | 'failed'
 export type ExecutionStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'timeout'
+export type ApiPricingMode = 'free' | 'one_time' | 'per_call' | 'subscription'
 
 export interface CustomApi {
   id: string
@@ -87,6 +88,8 @@ export interface CustomApi {
   description: string | null
   visibility: 'private' | 'shared'
   price_bdt: string | null
+  pricing_mode: ApiPricingMode
+  included_call_quota: number | null
   spec_status: SpecStatus
   openapi_spec: Record<string, unknown> | null
   cache_ttl_seconds: number
@@ -117,18 +120,32 @@ export interface Grant {
   created_at: string
 }
 
+export interface AllowedEmail {
+  id: string
+  api_id: string
+  email: string
+  created_at: string
+}
+
 export interface InvitePreview {
   api_name: string
   api_slug: string
   price_bdt: string | null
+  pricing_mode: ApiPricingMode
   valid: boolean
   reason: string | null
 }
 
 export interface AcceptInviteResult {
-  status: 'granted' | 'payment_required'
-  payment_intent_id: string | null
-  amount_expected_bdt: string | null
+  status: 'granted' | 'insufficient_balance'
+  price_bdt: string | null
+  balance_bdt: string | null
+}
+
+export interface SubscribeResult {
+  tier: PlanTier
+  expires_at: string
+  balance_bdt: string
 }
 
 export interface ApiExecution {
@@ -143,7 +160,7 @@ export interface ApiExecution {
   duration_ms: number | null
 }
 
-export type PaymentPurpose = 'subscription' | 'api_access'
+export type PaymentPurpose = 'subscription' | 'api_access' | 'recharge'
 export type PaymentStatus = 'pending' | 'submitted' | 'verified' | 'rejected' | 'expired'
 export type VerificationMethod = 'auto_sms' | 'manual_admin'
 
@@ -153,6 +170,10 @@ export interface Plan {
   price_bdt: number
   daily_creation_limit: number | null
   can_share: boolean
+  monthly_call_quota: number | null
+  platform_cut_pct: string
+  can_cashout: boolean
+  max_invitees_per_api: number | null
 }
 
 export interface PaymentIntent {
@@ -170,8 +191,68 @@ export interface PaymentIntent {
   created_at: string
 }
 
+export interface Wallet {
+  balance_bdt: string
+  earnings_bdt: string
+  can_cashout: boolean
+  platform_cut_pct: string
+}
+
+export type CashoutStatus = 'requested' | 'paid' | 'rejected'
+
+export interface Cashout {
+  id: string
+  amount_bdt: string
+  payout_msisdn: string
+  status: CashoutStatus
+  bkash_trx_id: string | null
+  note: string | null
+  created_at: string
+  decided_at: string | null
+}
+
+export interface SweepResult {
+  swept_bdt: string
+  balance_bdt: string
+  earnings_bdt: string
+}
+
+export interface AdminCashout extends Cashout {
+  user_id: string
+  user_email: string
+  user_username: string | null
+}
+
+export type WalletLedgerReason =
+  | 'recharge'
+  | 'subscription'
+  | 'api_access'
+  | 'call_debit'
+  | 'call_refund'
+  | 'call_earning'
+  | 'platform_cut'
+  | 'sweep_out'
+  | 'sweep_in'
+  | 'cashout'
+  | 'admin_adjust'
+
+export interface WalletLedgerEntry {
+  id: string
+  bucket: 'balance' | 'earnings'
+  amount_bdt: string
+  reason: WalletLedgerReason
+  balance_after_bdt: string
+  execution_id: string | null
+  api_id: string | null
+  transaction_id: string | null
+  counterparty_user_id: string | null
+  created_at: string
+}
+
 export interface AdminTransaction extends PaymentIntent {
   user_id: string
+  user_email: string
+  user_username: string | null
 }
 
 export interface AdminSms {
@@ -246,6 +327,10 @@ export interface AdminPlan {
   price_bdt: number
   daily_creation_limit: number | null
   can_share: boolean
+  monthly_call_quota: number | null
+  platform_cut_pct: string
+  can_cashout: boolean
+  max_invitees_per_api: number | null
   updated_at: string
 }
 
@@ -253,6 +338,10 @@ export interface AdminPlanUpdate {
   price_bdt?: number
   daily_creation_limit?: number | null
   can_share?: boolean
+  monthly_call_quota?: number | null
+  platform_cut_pct?: string
+  can_cashout?: boolean
+  max_invitees_per_api?: number | null
 }
 
 export interface UserSettings {

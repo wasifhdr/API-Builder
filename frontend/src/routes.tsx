@@ -4,6 +4,7 @@ import { PageLoading } from './components/ui'
 import { useSession } from './hooks/useSession'
 import AdminApis from './pages/AdminApis'
 import AdminAudit from './pages/AdminAudit'
+import AdminCashouts from './pages/AdminCashouts'
 import AdminControls from './pages/AdminControls'
 import AdminOverview from './pages/AdminOverview'
 import AdminPlans from './pages/AdminPlans'
@@ -159,6 +160,14 @@ export default function AppRoutes() {
         element={
           <RequireSuperAdmin>
             <AdminTransactions />
+          </RequireSuperAdmin>
+        }
+      />
+      <Route
+        path="/admin/cashouts"
+        element={
+          <RequireSuperAdmin>
+            <AdminCashouts />
           </RequireSuperAdmin>
         }
       />

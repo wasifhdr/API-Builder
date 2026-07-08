@@ -8,6 +8,7 @@ from app.models.api import ApiAccessGrant, CustomApi
 from app.models.billing import (
     PaymentPurpose,
     PaymentStatus,
+    PaymentTransaction,
     PlanTier,
     Subscription,
     SubscriptionStatus,
@@ -65,9 +66,31 @@ async def _make_custom_api(db, user, price_bdt=None):
     return api
 
 
+async def _make_legacy_transaction(db, user, *, purpose, amount_bdt, plan_tier=None, api_id=None):
+    """Since Phase W2, create_intent can no longer create SUBSCRIPTION/
+    API_ACCESS transactions — but pre-W2 rows can still exist and need to
+    verify/activate correctly via submit-trx + SMS match. Constructs one of
+    those legacy rows directly, bypassing create_intent's new RECHARGE-only
+    validation."""
+    transaction = PaymentTransaction(
+        user_id=user.id,
+        purpose=purpose,
+        plan_tier=plan_tier,
+        api_id=api_id,
+        amount_expected_bdt=amount_bdt,
+        status=PaymentStatus.PENDING,
+    )
+    db.add(transaction)
+    await db.commit()
+    await db.refresh(transaction)
+    return transaction
+
+
 async def test_matcher_exact_amount_verifies_and_activates_subscription(db, make_user):
     user = await make_user()
-    intent = await payments.create_intent(user.id, PaymentPurpose.SUBSCRIPTION, db, plan_tier=PlanTier.PRO)
+    intent = await _make_legacy_transaction(
+        db, user, purpose=PaymentPurpose.SUBSCRIPTION, amount_bdt=Decimal("100.00"), plan_tier=PlanTier.PRO
+    )
     intent = await payments.submit_trx(intent.id, user.id, "TRXEXACT001", db)
     assert intent.status == PaymentStatus.SUBMITTED
 
@@ -90,7 +113,9 @@ async def test_matcher_exact_amount_verifies_and_activates_subscription(db, make
 
 async def test_matcher_overpaid_still_verifies(db, make_user):
     user = await make_user()
-    intent = await payments.create_intent(user.id, PaymentPurpose.SUBSCRIPTION, db, plan_tier=PlanTier.PRO)
+    intent = await _make_legacy_transaction(
+        db, user, purpose=PaymentPurpose.SUBSCRIPTION, amount_bdt=Decimal("100.00"), plan_tier=PlanTier.PRO
+    )
     intent = await payments.submit_trx(intent.id, user.id, "TRXOVERPAY01", db)
 
     await sms_matcher.ingest_sms(
@@ -104,7 +129,9 @@ async def test_matcher_overpaid_still_verifies(db, make_user):
 
 async def test_matcher_underpaid_leaves_submitted_with_note(db, make_user):
     user = await make_user()
-    intent = await payments.create_intent(user.id, PaymentPurpose.SUBSCRIPTION, db, plan_tier=PlanTier.PRO)
+    intent = await _make_legacy_transaction(
+        db, user, purpose=PaymentPurpose.SUBSCRIPTION, amount_bdt=Decimal("100.00"), plan_tier=PlanTier.PRO
+    )
     intent = await payments.submit_trx(intent.id, user.id, "TRXUNDERPAY1", db)
 
     await sms_matcher.ingest_sms(
@@ -123,14 +150,18 @@ async def test_matcher_sms_before_submit_still_matches(db, make_user):
         "bKash", datetime.now(timezone.utc), db,
     )
 
-    intent = await payments.create_intent(user.id, PaymentPurpose.SUBSCRIPTION, db, plan_tier=PlanTier.PRO)
+    intent = await _make_legacy_transaction(
+        db, user, purpose=PaymentPurpose.SUBSCRIPTION, amount_bdt=Decimal("100.00"), plan_tier=PlanTier.PRO
+    )
     intent = await payments.submit_trx(intent.id, user.id, "TRXEARLYSMS1", db)
     assert intent.status == PaymentStatus.VERIFIED
 
 
 async def test_matcher_submit_before_sms_still_matches(db, make_user):
     user = await make_user()
-    intent = await payments.create_intent(user.id, PaymentPurpose.SUBSCRIPTION, db, plan_tier=PlanTier.PRO)
+    intent = await _make_legacy_transaction(
+        db, user, purpose=PaymentPurpose.SUBSCRIPTION, amount_bdt=Decimal("100.00"), plan_tier=PlanTier.PRO
+    )
     intent = await payments.submit_trx(intent.id, user.id, "TRXLATESMS01", db)
     assert intent.status == PaymentStatus.SUBMITTED
 
@@ -146,10 +177,14 @@ async def test_duplicate_trx_id_rejected(db, make_user):
     user_a = await make_user()
     user_b = await make_user()
 
-    intent_a = await payments.create_intent(user_a.id, PaymentPurpose.SUBSCRIPTION, db, plan_tier=PlanTier.PRO)
+    intent_a = await _make_legacy_transaction(
+        db, user_a, purpose=PaymentPurpose.SUBSCRIPTION, amount_bdt=Decimal("100.00"), plan_tier=PlanTier.PRO
+    )
     await payments.submit_trx(intent_a.id, user_a.id, "TRXSHARED001", db)
 
-    intent_b = await payments.create_intent(user_b.id, PaymentPurpose.SUBSCRIPTION, db, plan_tier=PlanTier.PRO)
+    intent_b = await _make_legacy_transaction(
+        db, user_b, purpose=PaymentPurpose.SUBSCRIPTION, amount_bdt=Decimal("100.00"), plan_tier=PlanTier.PRO
+    )
     with pytest.raises(PaymentError) as exc_info:
         await payments.submit_trx(intent_b.id, user_b.id, "TRXSHARED001", db)
     assert exc_info.value.status_code == 409
@@ -166,12 +201,14 @@ async def test_webhook_dedupe_identical_delivery_ignored(db):
     assert second is None
 
 
-async def test_api_access_purchase_creates_grant(db, make_user):
+async def test_legacy_api_access_purchase_creates_grant(db, make_user):
     owner = await make_user()
     buyer = await make_user()
     api = await _make_custom_api(db, owner, price_bdt=Decimal("50.00"))
 
-    intent = await payments.create_intent(buyer.id, PaymentPurpose.API_ACCESS, db, api_id=api.id)
+    intent = await _make_legacy_transaction(
+        db, buyer, purpose=PaymentPurpose.API_ACCESS, amount_bdt=Decimal("50.00"), api_id=api.id
+    )
     intent = await payments.submit_trx(intent.id, buyer.id, "TRXAPIACCESS", db)
 
     await sms_matcher.ingest_sms(
@@ -189,11 +226,15 @@ async def test_api_access_purchase_creates_grant(db, make_user):
     assert grant.revoked_at is None
 
 
-async def test_create_intent_rejects_free_api(db, make_user):
-    owner = await make_user()
-    buyer = await make_user()
-    api = await _make_custom_api(db, owner, price_bdt=None)
-
+async def test_create_intent_rejects_subscription_purpose(db, make_user):
+    user = await make_user()
     with pytest.raises(PaymentError) as exc_info:
-        await payments.create_intent(buyer.id, PaymentPurpose.API_ACCESS, db, api_id=api.id)
+        await payments.create_intent(user.id, PaymentPurpose.SUBSCRIPTION, db)
+    assert exc_info.value.status_code == 400
+
+
+async def test_create_intent_rejects_api_access_purpose(db, make_user):
+    user = await make_user()
+    with pytest.raises(PaymentError) as exc_info:
+        await payments.create_intent(user.id, PaymentPurpose.API_ACCESS, db)
     assert exc_info.value.status_code == 400

@@ -5,6 +5,9 @@ import time
 import uuid
 from datetime import datetime, timezone
 
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.config import settings
 from app.core.security import decrypt_bytes
 from app.db import async_session
@@ -12,14 +15,48 @@ from app.llm.enrich import enrich_spec
 from app.llm.spec_builder import build_skeleton
 from app.models.api import CustomApi, SpecStatus
 from app.models.execution import ApiExecution, ExecutionStatus
+from app.models.wallet import REASON_CALL_DEBIT, REASON_CALL_REFUND, WalletLedger
 from app.models.workflow import Workflow
 from app.recorder.replay import ReplayError, replay_workflow
 from app.recorder.session import RecordingSession
 from app.redis import redis_client
+from app.services import wallet
 
 log = logging.getLogger("worker")
 
 RESULT_SIZE_LIMIT_BYTES = 256 * 1024
+
+
+async def _settle_call_charge(
+    execution: ApiExecution, api: CustomApi, succeeded: bool, db: AsyncSession,
+) -> None:
+    """Settles the wallet debit taken at enqueue time for a per-call paid
+    execution. No-op if this execution was never charged (free call, owner or
+    super-admin caller, or a non-per-call API). Succeeded -> split the charged
+    price into owner earnings + a platform-cut ledger entry (shared with API
+    subscription accept/renew via wallet.split_sale_proceeds). Failed/timeout
+    -> refund the caller in full; nobody else is paid."""
+    result = await db.execute(
+        select(WalletLedger).where(
+            WalletLedger.execution_id == execution.id, WalletLedger.reason == REASON_CALL_DEBIT
+        )
+    )
+    debit_row = result.scalar_one_or_none()
+    if debit_row is None:
+        return
+
+    price = -debit_row.amount_bdt  # amount_bdt is stored negative for a debit
+    caller_id = execution.caller_user_id
+
+    if succeeded:
+        await wallet.split_sale_proceeds(
+            api.owner_id, price, db, api_id=api.id, execution_id=execution.id,
+            counterparty_user_id=caller_id,
+        )
+    else:
+        await wallet.credit(
+            caller_id, price, REASON_CALL_REFUND, db, api_id=api.id, execution_id=execution.id,
+        )
 
 
 def _truncate_for_storage(data: object) -> tuple[object, bool]:
@@ -96,7 +133,8 @@ async def execute_api(payload: dict) -> None:
         if execution is not None:
             execution.finished_at = datetime.now(timezone.utc)
             execution.duration_ms = result_payload["duration_ms"]
-            if result_payload["status"] == "succeeded":
+            succeeded = result_payload["status"] == "succeeded"
+            if succeeded:
                 execution.status = ExecutionStatus.SUCCEEDED
                 data, truncated = _truncate_for_storage(result_payload["data"])
                 execution.result = data
@@ -108,6 +146,10 @@ async def execute_api(payload: dict) -> None:
                 execution.status = ExecutionStatus.FAILED
                 execution.error_message = result_payload["error"]
                 execution.failure_artifact_path = result_payload.get("artifact_path")
+
+            api = await db.get(CustomApi, api_id)
+            if api is not None:
+                await _settle_call_charge(execution, api, succeeded=succeeded, db=db)
             await db.commit()
 
     await redis_client.set(f"exec:result:{execution_id}", json.dumps(result_payload), ex=600)

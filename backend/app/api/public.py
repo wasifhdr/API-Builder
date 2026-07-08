@@ -3,6 +3,7 @@ import hashlib
 import json
 import time
 import uuid
+from decimal import Decimal
 
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -10,14 +11,19 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import select
 
 from app.config import settings
-from app.core.deps import SESSION_COOKIE
+from app.core.deps import SESSION_COOKIE, get_effective_tier
 from app.db import async_session
-from app.models.api import ApiKey, CustomApi
+from app.models.api import ApiKey, ApiPricingMode, CustomApi
 from app.models.execution import ApiExecution, ExecutionStatus
-from app.models.user import User
+from app.models.user import User, UserRole
+from app.models.wallet import REASON_CALL_DEBIT
 from app.redis import redis_client
+from app.services import wallet
 from app.services.grants import has_access
 from app.services.param_coercion import ParamCoercionError, coerce_params
+from app.services.plans import plan_for
+from app.services.quota import QuotaExceeded, consume_api_subscription_quota, consume_call_quota
+from app.services.wallet import InsufficientBalance
 
 RATE_LIMIT_PER_MINUTE = 60
 RATE_LIMIT_WINDOW_SECONDS = 120
@@ -60,6 +66,26 @@ async def _check_rate_limit(key_id: uuid.UUID) -> None:
                 "reset_seconds": reset_seconds,
             },
         )
+
+
+def _price_for_call(api: CustomApi, is_owner_or_super: bool) -> Decimal | None:
+    """What to charge the caller for one call — None means free. Only
+    per_call-priced APIs ever charge, and never the owner or a super admin."""
+    if api.pricing_mode == ApiPricingMode.PER_CALL and not is_owner_or_super:
+        return api.price_bdt
+    return None
+
+
+async def _consume_subscription_included_quota(
+    api: CustomApi, user_id: uuid.UUID, is_owner_or_super: bool, redis, db,
+) -> None:
+    """Raises QuotaExceeded once a subscription-mode API's included_call_quota
+    for this caller is used up for the Dhaka month. No-op for any other
+    pricing mode, the owner, a super admin, or an unlimited (None) quota —
+    the monthly subscription already paid for the call either way."""
+    if api.pricing_mode != ApiPricingMode.SUBSCRIPTION or is_owner_or_super or api.included_call_quota is None:
+        return
+    await consume_api_subscription_quota(user_id, api.id, api.included_call_quota, redis, db)
 
 
 def _cache_key(api_id: uuid.UUID, params: dict) -> str:
@@ -114,6 +140,18 @@ async def run_api(
             if cached is not None:
                 return JSONResponse({"data": json.loads(cached), "meta": {"cached": True}})
 
+        is_super = key_owner is not None and key_owner.role == UserRole.SUPER_ADMIN
+        is_owner_or_super = key.user_id == api.owner_id or is_super
+        price = _price_for_call(api, is_owner_or_super)
+
+        try:
+            await _consume_subscription_included_quota(api, key.user_id, is_owner_or_super, redis_client, db)
+        except QuotaExceeded as exc:
+            raise HTTPException(
+                status_code=429,
+                detail={"detail": "monthly included calls used", "reset_seconds": exc.reset_seconds},
+            ) from exc
+
         execution = ApiExecution(
             api_id=api.id,
             caller_user_id=key.user_id,
@@ -122,9 +160,41 @@ async def run_api(
             status=ExecutionStatus.QUEUED,
         )
         db.add(execution)
-        await db.commit()
-        await db.refresh(execution)
+        await db.flush()
         exec_id = execution.id
+
+        if price:
+            try:
+                await wallet.debit(
+                    key.user_id, price, REASON_CALL_DEBIT, db, api_id=api.id, execution_id=exec_id
+                )
+            except InsufficientBalance as exc:
+                await db.rollback()
+                raise HTTPException(
+                    status_code=402,
+                    detail={
+                        "detail": "insufficient wallet balance",
+                        "price_bdt": str(price),
+                        "balance_bdt": str(exc.available),
+                    },
+                ) from exc
+
+        if not is_super:
+            # Usage is usage — a call counts toward the caller's monthly
+            # allowance whether it's free, one-time-granted, or per-call paid,
+            # and whether the caller is the API's own owner.
+            caller_tier = await get_effective_tier(key.user_id, db)
+            call_limit = (await plan_for(caller_tier, db)).monthly_call_quota
+            try:
+                await consume_call_quota(key.user_id, call_limit, redis_client, db)
+            except QuotaExceeded as exc:
+                await db.rollback()
+                raise HTTPException(
+                    status_code=429,
+                    detail={"detail": "monthly call quota exceeded", "reset_seconds": exc.reset_seconds},
+                ) from exc
+
+        await db.commit()
         api_id = api.id
         cache_ttl = api.cache_ttl_seconds
 

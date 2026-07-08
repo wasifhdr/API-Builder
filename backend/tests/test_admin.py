@@ -309,6 +309,27 @@ async def test_audit_log_orders_newest_first_and_resolves_actor(db, make_user):
     assert rows[0].actor_username == admin.username
 
 
+# --- transactions list ---
+
+
+async def test_list_transactions_includes_user_email_and_username(db, make_user):
+    user = await make_user(email="trx-lister@example.com")
+    user.username = "trx_lister"
+    trx = PaymentTransaction(
+        user_id=user.id,
+        purpose=PaymentPurpose.API_ACCESS,
+        amount_expected_bdt=Decimal("100.00"),
+        status=PaymentStatus.PENDING,
+    )
+    db.add(trx)
+    await db.commit()
+
+    rows = await admin_api.list_transactions(db=db)
+    row = next(r for r in rows if r.id == trx.id)
+    assert row.user_email == "trx-lister@example.com"
+    assert row.user_username == "trx_lister"
+
+
 # --- retrofit audit sites: transaction verify/reject, plan update ---
 
 
@@ -327,7 +348,13 @@ async def test_transaction_verify_logs_audit_row(db, make_user):
     await db.commit()
     await db.refresh(trx)
 
-    await admin_api.verify_transaction(transaction_id=trx.id, admin=admin, db=db)
+    result = await admin_api.verify_transaction(transaction_id=trx.id, admin=admin, db=db)
+    # Response-model construction (user_email/user_username) is separate from
+    # the ORM object -- assert on it directly since calling the handler here
+    # skips FastAPI's response_model serialization step that would otherwise
+    # catch a mismatch.
+    assert result.user_email == user.email
+    assert result.status == PaymentStatus.VERIFIED
 
     actions = await _audit_actions(db)
     assert "transaction.verify" in actions
@@ -348,9 +375,11 @@ async def test_transaction_reject_logs_audit_row(db, make_user):
     await db.commit()
     await db.refresh(trx)
 
-    await admin_api.reject_transaction(
+    result = await admin_api.reject_transaction(
         transaction_id=trx.id, body=RejectRequest(note="fake trx"), admin=admin, db=db
     )
+    assert result.user_email == user.email
+    assert result.status == PaymentStatus.REJECTED
 
     actions = await _audit_actions(db)
     assert "transaction.reject" in actions

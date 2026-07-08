@@ -4,15 +4,13 @@ from fastapi import HTTPException
 from app.api import admin as admin_api
 from app.api import apis as apis_api
 from app.models.api import ApiAccessGrant, ApiVisibility, CustomApi, GrantSource
-from app.models.billing import PaymentPurpose, PlanTier
+from app.models.billing import PlanTier
 from app.models.plan_settings import PlanSettings
 from app.models.user import UserRole
 from app.models.workflow import Workflow
 from app.schemas.admin import AdminPlanUpdate
 from app.schemas.api import CustomApiUpdate
-from app.services import payments
 from app.services.grants import has_access
-from app.services.payments import PaymentError
 from app.services.plans import get_plans, invalidate_cache, plan_for
 
 
@@ -118,6 +116,34 @@ async def test_admin_list_plans_returns_all_three(db):
     assert tiers == {PlanTier.FREE, PlanTier.PRO, PlanTier.MAX}
 
 
+async def test_admin_patch_new_fields_reflect_in_public_plans(db, make_user):
+    from decimal import Decimal
+
+    from app.api import billing as billing_api
+
+    admin = await _make_super(db, make_user)
+    await admin_api.update_plan_settings(
+        tier=PlanTier.PRO,
+        body=AdminPlanUpdate(monthly_call_quota=1234, platform_cut_pct=Decimal("30"), max_invitees_per_api=7),
+        admin=admin, db=db,
+    )
+
+    public_plans = await billing_api.list_plans(db)
+    pro = next(p for p in public_plans if p.tier == PlanTier.PRO)
+    assert pro.monthly_call_quota == 1234
+    assert pro.platform_cut_pct == Decimal("30")
+    assert pro.max_invitees_per_api == 7
+
+
+async def test_admin_patch_free_tier_cashout_rejected(db, make_user):
+    admin = await _make_super(db, make_user)
+    with pytest.raises(HTTPException) as exc_info:
+        await admin_api.update_plan_settings(
+            tier=PlanTier.FREE, body=AdminPlanUpdate(can_cashout=True), admin=admin, db=db
+        )
+    assert exc_info.value.status_code == 400
+
+
 # --- super-admin quota bypass ---
 
 
@@ -177,24 +203,5 @@ async def test_super_admin_create_invite_without_pro(db, make_user):
     invite = await apis_api.create_invite(api_id=api.id, body=CreateInviteRequest(), user=super_owner, db=db)
     assert invite.api_id == api.id
 
-
-# --- subscription intent from super rejected ---
-
-
-async def test_subscription_intent_from_super_rejected(db, make_user):
-    super_user = await _make_super(db, make_user)
-
-    with pytest.raises(PaymentError) as exc_info:
-        await payments.create_intent(
-            super_user.id, PaymentPurpose.SUBSCRIPTION, db, plan_tier=PlanTier.PRO, is_super=True
-        )
-    assert exc_info.value.status_code == 400
-    assert "super admin" in exc_info.value.detail
-
-
-async def test_subscription_intent_from_regular_user_still_allowed(db, make_user):
-    user = await make_user()
-    intent = await payments.create_intent(
-        user.id, PaymentPurpose.SUBSCRIPTION, db, plan_tier=PlanTier.PRO, is_super=False
-    )
-    assert intent.plan_tier == PlanTier.PRO
+# Subscribing (super-admin rejection, wallet debit, insufficient balance) is
+# now a wallet operation — see test_wallet_purchases.py::test_subscribe_*.

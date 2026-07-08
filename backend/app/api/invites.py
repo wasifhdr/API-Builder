@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
@@ -6,13 +6,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import current_user
 from app.db import get_db
-from app.models.api import ApiAccessGrant, ApiInvite, CustomApi, GrantSource
-from app.models.billing import PaymentPurpose
+from app.models.api import ApiAccessGrant, ApiAllowedEmail, ApiInvite, ApiPricingMode, CustomApi, GrantSource
 from app.models.user import User
+from app.models.wallet import REASON_API_ACCESS
 from app.schemas.invite import AcceptInviteResult, InvitePreviewOut
-from app.services import payments
+from app.services import wallet
+from app.services.wallet import InsufficientBalance
 
 router = APIRouter(prefix="/invites", tags=["invites"])
+
+SUBSCRIPTION_DAYS = 30
 
 
 async def _get_invite_and_api(token: str, db: AsyncSession) -> tuple[ApiInvite, CustomApi]:
@@ -45,6 +48,7 @@ async def preview_invite(token: str, db: AsyncSession = Depends(get_db)) -> Invi
         api_name=api.name,
         api_slug=api.slug,
         price_bdt=str(api.price_bdt) if api.price_bdt else None,
+        pricing_mode=api.pricing_mode,
         valid=reason is None,
         reason=reason,
     )
@@ -65,29 +69,73 @@ async def accept_invite(
         select(ApiAccessGrant).where(ApiAccessGrant.api_id == api.id, ApiAccessGrant.user_id == user.id)
     )
     grant = existing.scalar_one_or_none()
-    if grant is not None and grant.revoked_at is None:
+    is_subscription = api.pricing_mode == ApiPricingMode.SUBSCRIPTION
+    # Subscription-mode acceptance is also how a renewal happens — an already
+    # live grant must still go through payment+extension, never short-circuit.
+    if grant is not None and grant.revoked_at is None and not is_subscription:
         return AcceptInviteResult(status="granted")
 
-    invite.use_count += 1
+    allowed = await db.execute(
+        select(ApiAllowedEmail).where(ApiAllowedEmail.api_id == api.id, ApiAllowedEmail.email == user.email)
+    )
+    if allowed.scalar_one_or_none() is None:
+        raise HTTPException(
+            status_code=403,
+            detail="your account's email hasn't been approved for this API — ask the owner to add it",
+        )
 
-    if not api.price_bdt or api.price_bdt <= 0:
+    if is_subscription:
+        try:
+            await wallet.debit(user.id, api.price_bdt, REASON_API_ACCESS, db, api_id=api.id)
+        except InsufficientBalance:
+            balance, _ = await wallet.balances(user.id, db)
+            return AcceptInviteResult(
+                status="insufficient_balance", price_bdt=str(api.price_bdt), balance_bdt=str(balance),
+            )
+        await wallet.split_sale_proceeds(
+            api.owner_id, api.price_bdt, db, api_id=api.id, counterparty_user_id=user.id,
+        )
+
+        now = datetime.now(timezone.utc)
+        # A still-live grant renews from its current expiry (no lost paid-for
+        # time); a lapsed or brand-new one starts a fresh 30-day period.
+        base = grant.expires_at if (grant is not None and grant.expires_at and grant.expires_at > now) else now
+        invite.use_count += 1
         if grant is not None:
             grant.revoked_at = None
-            grant.granted_via = GrantSource.INVITE
+            grant.granted_via = GrantSource.PURCHASE
             grant.invite_id = invite.id
+            grant.expires_at = base + timedelta(days=SUBSCRIPTION_DAYS)
         else:
-            db.add(
-                ApiAccessGrant(
-                    api_id=api.id, user_id=user.id, granted_via=GrantSource.INVITE, invite_id=invite.id
-                )
-            )
+            db.add(ApiAccessGrant(
+                api_id=api.id, user_id=user.id, granted_via=GrantSource.PURCHASE, invite_id=invite.id,
+                expires_at=base + timedelta(days=SUBSCRIPTION_DAYS),
+            ))
         await db.commit()
         return AcceptInviteResult(status="granted")
 
+    priced = bool(api.price_bdt) and api.price_bdt > 0
+    if priced:
+        try:
+            await wallet.debit(user.id, api.price_bdt, REASON_API_ACCESS, db, api_id=api.id)
+        except InsufficientBalance:
+            balance, _ = await wallet.balances(user.id, db)
+            return AcceptInviteResult(
+                status="insufficient_balance",
+                price_bdt=str(api.price_bdt),
+                balance_bdt=str(balance),
+            )
+        await wallet.split_sale_proceeds(
+            api.owner_id, api.price_bdt, db, api_id=api.id, counterparty_user_id=user.id,
+        )
+
+    invite.use_count += 1
+    granted_via = GrantSource.PURCHASE if priced else GrantSource.INVITE
+    if grant is not None:
+        grant.revoked_at = None
+        grant.granted_via = granted_via
+        grant.invite_id = invite.id
+    else:
+        db.add(ApiAccessGrant(api_id=api.id, user_id=user.id, granted_via=granted_via, invite_id=invite.id))
     await db.commit()
-    intent = await payments.create_intent(user.id, PaymentPurpose.API_ACCESS, db, api_id=api.id)
-    return AcceptInviteResult(
-        status="payment_required",
-        payment_intent_id=intent.id,
-        amount_expected_bdt=str(intent.amount_expected_bdt),
-    )
+    return AcceptInviteResult(status="granted")

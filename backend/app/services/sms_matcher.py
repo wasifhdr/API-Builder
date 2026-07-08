@@ -1,7 +1,7 @@
 import hashlib
 import re
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from decimal import Decimal
 
 from sqlalchemy import func, select
@@ -13,16 +13,14 @@ from app.models.billing import (
     PaymentPurpose,
     PaymentStatus,
     PaymentTransaction,
-    Subscription,
-    SubscriptionStatus,
     VerificationMethod,
 )
+from app.models.wallet import REASON_RECHARGE
+from app.services import subscriptions, wallet
 
 AMOUNT_RE = re.compile(r"Tk\s*([\d,]+(?:\.\d{1,2})?)", re.I)
 TRX_RE = re.compile(r"TrxID\s*:?\s*([A-Z0-9]{8,12})", re.I)
 MSISDN_RE = re.compile(r"from\s+(01\d{9})", re.I)
-
-SUBSCRIPTION_DAYS = 30
 
 
 def dedupe_hash(raw_text: str, received_at: datetime) -> str:
@@ -56,33 +54,13 @@ async def apply_verified_effects(transaction: PaymentTransaction, db: AsyncSessi
     transaction that has just been marked verified. Does not commit — the
     caller (matcher or admin verify endpoint) controls the transaction
     boundary since it also needs to persist the verified status itself."""
-    now = datetime.now(timezone.utc)
-
     if transaction.purpose == PaymentPurpose.SUBSCRIPTION:
-        result = await db.execute(
-            select(Subscription).where(
-                Subscription.user_id == transaction.user_id,
-                Subscription.status == SubscriptionStatus.ACTIVE,
-            )
+        # Legacy path: no new SUBSCRIPTION intents are created since Phase W2
+        # (wallet-funded subscribe), but a pre-W2 pending/submitted row can
+        # still land here via submit-trx or a late-arriving SMS.
+        await subscriptions.activate(
+            transaction.user_id, transaction.plan_tier, db, source_transaction_id=transaction.id
         )
-        existing = result.scalar_one_or_none()
-        if existing is not None and existing.tier == transaction.plan_tier:
-            existing.expires_at = existing.expires_at + timedelta(days=SUBSCRIPTION_DAYS)
-        else:
-            if existing is not None:
-                # Upgrade/downgrade: no proration, per the Blueprint — cancel
-                # the old row and start a fresh 30-day period on the new tier.
-                existing.status = SubscriptionStatus.CANCELLED
-            db.add(
-                Subscription(
-                    user_id=transaction.user_id,
-                    tier=transaction.plan_tier,
-                    status=SubscriptionStatus.ACTIVE,
-                    starts_at=now,
-                    expires_at=now + timedelta(days=SUBSCRIPTION_DAYS),
-                    source_transaction_id=transaction.id,
-                )
-            )
     elif transaction.purpose == PaymentPurpose.API_ACCESS:
         result = await db.execute(
             select(ApiAccessGrant).where(
@@ -103,6 +81,11 @@ async def apply_verified_effects(transaction: PaymentTransaction, db: AsyncSessi
         else:
             grant.revoked_at = None
             grant.transaction_id = transaction.id
+    elif transaction.purpose == PaymentPurpose.RECHARGE:
+        await wallet.credit(
+            transaction.user_id, transaction.amount_received_bdt, REASON_RECHARGE, db,
+            transaction_id=transaction.id,
+        )
 
 
 async def try_match(transaction_id: uuid.UUID, db: AsyncSession) -> bool:

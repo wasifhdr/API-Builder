@@ -6,12 +6,13 @@ from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import case, func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.core.deps import current_user, get_effective_tier
 from app.db import get_db
-from app.models.api import ApiAccessGrant, ApiInvite, ApiVisibility, CustomApi, SpecStatus
+from app.models.api import ApiAccessGrant, ApiAllowedEmail, ApiInvite, ApiPricingMode, ApiVisibility, CustomApi, SpecStatus
 from app.models.execution import ApiExecution, ExecutionStatus
 from app.models.user import User, UserRole
 from app.redis import redis_client
@@ -23,7 +24,7 @@ from app.schemas.api import (
     CustomApiOut,
     CustomApiUpdate,
 )
-from app.schemas.invite import CreateInviteRequest, GrantOut, InviteOut
+from app.schemas.invite import AddAllowedEmailRequest, AllowedEmailOut, CreateInviteRequest, GrantOut, InviteOut
 from app.services.grants import has_access
 from app.services.plans import plan_for
 
@@ -86,9 +87,10 @@ async def update_api(
     if data.get("is_active") is not None:
         api.is_active = data["is_active"]
 
+    new_pricing_mode = data.get("pricing_mode", api.pricing_mode)
     wants_shared = data.get("visibility") == ApiVisibility.SHARED
-    wants_price = bool(data.get("price_bdt")) and data["price_bdt"] > 0
-    if (wants_shared or wants_price) and user.role != UserRole.SUPER_ADMIN:
+    wants_paid_mode = new_pricing_mode != ApiPricingMode.FREE
+    if (wants_shared or wants_paid_mode) and user.role != UserRole.SUPER_ADMIN:
         tier = await get_effective_tier(user.id, db)
         can_share = (await plan_for(tier, db)).can_share
         if not can_share:
@@ -96,8 +98,22 @@ async def update_api(
 
     if "visibility" in data:
         api.visibility = data["visibility"]
-    if "price_bdt" in data:
-        api.price_bdt = data["price_bdt"]
+
+    if "pricing_mode" in data or "price_bdt" in data:
+        new_price = data.get("price_bdt", api.price_bdt)
+        if new_pricing_mode == ApiPricingMode.FREE:
+            new_price = None
+        elif new_pricing_mode in (ApiPricingMode.PER_CALL, ApiPricingMode.SUBSCRIPTION) and (
+            not new_price or new_price <= 0
+        ):
+            raise HTTPException(
+                status_code=400, detail=f"{new_pricing_mode.value} pricing requires a price_bdt > 0"
+            )
+        api.pricing_mode = new_pricing_mode
+        api.price_bdt = new_price
+
+    if "included_call_quota" in data:
+        api.included_call_quota = data["included_call_quota"]
 
     await db.commit()
     await db.refresh(api)
@@ -188,6 +204,75 @@ async def revoke_invite(
     if invite is None or invite.api_id != api.id:
         raise HTTPException(status_code=404, detail="invite not found")
     invite.revoked_at = datetime.now(timezone.utc)
+    await db.commit()
+
+
+@router.post("/{api_id}/allowed-emails", response_model=AllowedEmailOut, status_code=201)
+async def add_allowed_email(
+    api_id: uuid.UUID,
+    body: AddAllowedEmailRequest,
+    user: User = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+) -> ApiAllowedEmail:
+    api = await _get_owned_api(api_id, user, db)
+
+    already_allowed = await db.execute(
+        select(ApiAllowedEmail).where(ApiAllowedEmail.api_id == api.id, ApiAllowedEmail.email == body.email)
+    )
+    is_new_email = already_allowed.scalar_one_or_none() is None
+    # A re-add of an already-allowed email isn't a new invitee (and will 409
+    # below regardless) — only a genuinely new email should count against cap.
+    if is_new_email and user.role != UserRole.SUPER_ADMIN:
+        tier = await get_effective_tier(user.id, db)
+        max_invitees = (await plan_for(tier, db)).max_invitees_per_api
+        if max_invitees is not None:
+            count_result = await db.execute(
+                select(func.count()).select_from(ApiAllowedEmail).where(ApiAllowedEmail.api_id == api.id)
+            )
+            if count_result.scalar_one() >= max_invitees:
+                raise HTTPException(
+                    status_code=403,
+                    detail=f"this plan allows at most {max_invitees} invitees per API",
+                )
+
+    entry = ApiAllowedEmail(api_id=api.id, email=body.email, added_by=user.id)
+    db.add(entry)
+    try:
+        await db.commit()
+    except IntegrityError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail="that email is already allowed for this API") from exc
+    await db.refresh(entry)
+    return entry
+
+
+@router.get("/{api_id}/allowed-emails", response_model=list[AllowedEmailOut])
+async def list_allowed_emails(
+    api_id: uuid.UUID,
+    user: User = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+) -> list[ApiAllowedEmail]:
+    api = await _get_owned_api(api_id, user, db)
+    result = await db.execute(
+        select(ApiAllowedEmail)
+        .where(ApiAllowedEmail.api_id == api.id)
+        .order_by(ApiAllowedEmail.created_at.desc())
+    )
+    return list(result.scalars().all())
+
+
+@router.delete("/{api_id}/allowed-emails/{email_id}", status_code=204)
+async def remove_allowed_email(
+    api_id: uuid.UUID,
+    email_id: uuid.UUID,
+    user: User = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    api = await _get_owned_api(api_id, user, db)
+    entry = await db.get(ApiAllowedEmail, email_id)
+    if entry is None or entry.api_id != api.id:
+        raise HTTPException(status_code=404, detail="allowed email not found")
+    await db.delete(entry)
     await db.commit()
 
 

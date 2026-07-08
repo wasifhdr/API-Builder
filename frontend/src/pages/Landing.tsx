@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from 'react'
-import { Navigate } from 'react-router-dom'
+import { Navigate, useSearchParams } from 'react-router-dom'
 import {
   Button,
   buttonClasses,
@@ -40,7 +40,7 @@ const USERNAME_PATTERN = /^[a-z0-9_]{3,30}$/
 type AuthMode = 'login' | 'register'
 type Availability = 'idle' | 'checking' | 'available' | 'taken' | 'invalid'
 
-function AuthCard() {
+function AuthCard({ inviteToken }: { inviteToken: string | null }) {
   const { login, register } = useSession()
   const [mode, setMode] = useState<AuthMode>('login')
   const [name, setName] = useState('')
@@ -219,7 +219,10 @@ function AuthCard() {
         <span className="h-px flex-1 bg-sand" />
       </div>
 
-      <a href="/api/auth/login" className={buttonClasses('default', 'md', 'w-full justify-center')}>
+      <a
+        href={inviteToken ? `/api/auth/login?invite_token=${inviteToken}` : '/api/auth/login'}
+        className={buttonClasses('default', 'md', 'w-full justify-center')}
+      >
         Sign in with Google
       </a>
 
@@ -236,9 +239,11 @@ function AuthCard() {
 
 export default function Landing() {
   const { user, loading } = useSession()
+  const [searchParams] = useSearchParams()
+  const inviteToken = searchParams.get('invite')
 
   if (loading) return <PageLoading />
-  if (user) return <Navigate to="/dashboard" replace />
+  if (user) return <Navigate to={inviteToken ? `/invite/${inviteToken}` : '/dashboard'} replace />
 
   return (
     <div className="min-h-screen bg-cream">
@@ -265,7 +270,7 @@ export default function Landing() {
           </div>
 
           <div className="flex justify-center">
-            <AuthCard />
+            <AuthCard inviteToken={inviteToken} />
           </div>
         </div>
       </section>

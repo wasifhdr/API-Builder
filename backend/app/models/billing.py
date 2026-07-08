@@ -46,6 +46,7 @@ class Subscription(Base, TimestampMixin):
 class PaymentPurpose(str, enum.Enum):
     SUBSCRIPTION = "subscription"
     API_ACCESS = "api_access"
+    RECHARGE = "recharge"
 
 
 class PaymentStatus(str, enum.Enum):

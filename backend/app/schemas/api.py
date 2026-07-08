@@ -5,7 +5,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict
 
-from app.models.api import ApiVisibility, SpecStatus
+from app.models.api import ApiPricingMode, ApiVisibility, SpecStatus
 from app.models.execution import ExecutionStatus
 
 
@@ -20,6 +20,8 @@ class CustomApiOut(BaseModel):
     description: str | None
     visibility: ApiVisibility
     price_bdt: Decimal | None
+    pricing_mode: ApiPricingMode
+    included_call_quota: int | None
     spec_status: SpecStatus
     openapi_spec: dict | None
     cache_ttl_seconds: int
@@ -34,6 +36,8 @@ class CustomApiUpdate(BaseModel):
     is_active: bool | None = None
     visibility: ApiVisibility | None = None
     price_bdt: Decimal | None = None
+    pricing_mode: ApiPricingMode | None = None
+    included_call_quota: int | None = None
 
 
 class ApiExecutionOut(BaseModel):

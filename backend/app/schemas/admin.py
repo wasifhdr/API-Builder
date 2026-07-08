@@ -7,6 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.models.api import ApiVisibility, SpecStatus
 from app.models.billing import PaymentPurpose, PaymentStatus, PlanTier, SubscriptionStatus, VerificationMethod
 from app.models.user import UserRole
+from app.models.wallet import CashoutStatus
 from app.models.workflow import WorkflowStatus
 
 
@@ -14,6 +15,8 @@ class AdminTransactionOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: uuid.UUID
     user_id: uuid.UUID
+    user_email: str
+    user_username: str | None
     purpose: PaymentPurpose
     plan_tier: PlanTier | None
     api_id: uuid.UUID | None
@@ -112,6 +115,10 @@ class AdminPlanOut(BaseModel):
     price_bdt: int
     daily_creation_limit: int | None
     can_share: bool
+    monthly_call_quota: int | None
+    platform_cut_pct: Decimal
+    can_cashout: bool
+    max_invitees_per_api: int | None
     updated_at: datetime
 
 
@@ -120,6 +127,10 @@ class AdminPlanUpdate(BaseModel):
     price_bdt: int | None = Field(default=None, ge=0)
     daily_creation_limit: int | None = None
     can_share: bool | None = None
+    monthly_call_quota: int | None = None
+    platform_cut_pct: Decimal | None = Field(default=None, ge=0, le=100)
+    can_cashout: bool | None = None
+    max_invitees_per_api: int | None = None
 
 
 class AdminApiOut(BaseModel):
@@ -153,6 +164,31 @@ class AdminStatsDayOut(BaseModel):
     date: str
     total: int
     succeeded: int
+
+
+class AdminCashoutOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: uuid.UUID
+    user_id: uuid.UUID
+    user_email: str
+    user_username: str | None
+    amount_bdt: Decimal
+    payout_msisdn: str
+    status: CashoutStatus
+    bkash_trx_id: str | None
+    note: str | None
+    created_at: datetime
+    decided_at: datetime | None
+
+
+class CashoutPayRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    bkash_trx_id: str = Field(min_length=4, max_length=40)
+
+
+class CashoutRejectRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    note: str = ""
 
 
 class AdminStatsOut(BaseModel):

@@ -15,6 +15,7 @@ import {
   InlineCode,
   Input,
   PageHeader,
+  Radio,
   StatChip,
   Table,
   TableWrapper,
@@ -25,13 +26,16 @@ import {
 import { useSession } from '../hooks/useSession'
 import { ApiError, api } from '../lib/api'
 import type {
+  AllowedEmail,
   ApiExecution,
+  ApiPricingMode,
   ApiStats,
   CustomApi,
   ExecutionStatus,
   Grant,
   Invite,
   SpecStatus,
+  Wallet,
 } from '../lib/types'
 
 const SPEC_BADGE: Record<SpecStatus, BadgeVariant> = {
@@ -39,6 +43,20 @@ const SPEC_BADGE: Record<SpecStatus, BadgeVariant> = {
   generating: 'pending',
   ready: 'success',
   failed: 'failed',
+}
+
+const PRICING_MODE_LABEL: Record<ApiPricingMode, string> = {
+  free: 'Free',
+  one_time: 'One-time',
+  per_call: 'Per-call',
+  subscription: 'Subscription',
+}
+
+const PRICING_MODE_PRICE_LABEL: Record<ApiPricingMode, string> = {
+  free: '',
+  one_time: 'Price (৳, one-time)',
+  per_call: 'Price (৳ per call)',
+  subscription: 'Price (৳ per month)',
 }
 
 const EXEC_BADGE: Record<ExecutionStatus, BadgeVariant> = {
@@ -56,8 +74,13 @@ export default function ApiDetail() {
   const [executions, setExecutions] = useState<ApiExecution[]>([])
   const [invites, setInvites] = useState<Invite[]>([])
   const [grants, setGrants] = useState<Grant[]>([])
+  const [allowedEmails, setAllowedEmails] = useState<AllowedEmail[]>([])
+  const [allowedEmailInput, setAllowedEmailInput] = useState('')
   const [cacheTtl, setCacheTtl] = useState(0)
   const [priceInput, setPriceInput] = useState('')
+  const [pricingMode, setPricingMode] = useState<ApiPricingMode>('free')
+  const [includedCallQuota, setIncludedCallQuota] = useState('')
+  const [wallet, setWallet] = useState<Wallet | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [saveMessage, setSaveMessage] = useState<string | null>(null)
   const [stats, setStats] = useState<ApiStats | null>(null)
@@ -73,11 +96,15 @@ export default function ApiDetail() {
         setCustomApi(a)
         setCacheTtl(a.cache_ttl_seconds)
         setPriceInput(a.price_bdt ?? '')
+        setPricingMode(a.pricing_mode)
+        setIncludedCallQuota(a.included_call_quota === null ? '' : String(a.included_call_quota))
       })
       .catch((err) => setError(err instanceof Error ? err.message : 'Failed to load API'))
     api.get<ApiExecution[]>(`/apis/${apiId}/executions`).then(setExecutions).catch(() => undefined)
     api.get<Invite[]>(`/apis/${apiId}/invites`).then(setInvites).catch(() => undefined)
     api.get<Grant[]>(`/apis/${apiId}/grants`).then(setGrants).catch(() => undefined)
+    api.get<AllowedEmail[]>(`/apis/${apiId}/allowed-emails`).then(setAllowedEmails).catch(() => undefined)
+    api.get<Wallet>('/billing/wallet').then(setWallet).catch(() => undefined)
   }
 
   function loadStats() {
@@ -126,16 +153,46 @@ export default function ApiDetail() {
     }
   }
 
-  async function savePrice() {
+  async function savePricing() {
     setError(null)
     try {
       const updated = await api.patch<CustomApi>(`/apis/${apiId}`, {
-        price_bdt: priceInput.trim() === '' ? null : priceInput.trim(),
+        pricing_mode: pricingMode,
+        price_bdt: pricingMode === 'free' || priceInput.trim() === '' ? null : priceInput.trim(),
+        included_call_quota:
+          pricingMode === 'subscription' && includedCallQuota.trim() !== ''
+            ? Math.trunc(Number(includedCallQuota))
+            : null,
       })
       setCustomApi(updated)
+      setPricingMode(updated.pricing_mode)
+      setPriceInput(updated.price_bdt ?? '')
+      setIncludedCallQuota(updated.included_call_quota === null ? '' : String(updated.included_call_quota))
       setSaveMessage('Saved.')
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Failed to update price')
+      setError(err instanceof ApiError ? err.message : 'Failed to update pricing')
+    }
+  }
+
+  async function addAllowedEmail() {
+    const email = allowedEmailInput.trim()
+    if (!email) return
+    setError(null)
+    try {
+      const entry = await api.post<AllowedEmail>(`/apis/${apiId}/allowed-emails`, { email })
+      setAllowedEmails((prev) => [entry, ...prev])
+      setAllowedEmailInput('')
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Failed to add email')
+    }
+  }
+
+  async function removeAllowedEmail(id: string) {
+    try {
+      await api.delete(`/apis/${apiId}/allowed-emails/${id}`)
+      setAllowedEmails((prev) => prev.filter((a) => a.id !== id))
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Failed to remove email')
     }
   }
 
@@ -266,29 +323,121 @@ export default function ApiDetail() {
               />
               Shared (allow invites &amp; paid access — requires Pro or Max)
             </label>
+
             {customApi.visibility === 'shared' && (
-              <div className="flex flex-wrap items-end gap-2">
-                <div>
-                  <FieldLabel htmlFor="price">Price for grantees (৳, blank = free)</FieldLabel>
-                  <Input
-                    id="price"
-                    type="text"
-                    value={priceInput}
-                    onChange={(e) => setPriceInput(e.target.value)}
-                    placeholder="free"
-                    className="w-32"
-                  />
+              <div className="space-y-3 border-t border-sand pt-4">
+                <h3 className="text-label uppercase text-ink/70">Pricing</h3>
+                <div className="flex flex-wrap gap-4">
+                  {(['free', 'one_time', 'per_call', 'subscription'] as const).map((mode) => (
+                    <label key={mode} className="flex items-center gap-2 text-sm">
+                      <Radio
+                        name="pricing-mode"
+                        checked={pricingMode === mode}
+                        onChange={() => setPricingMode(mode)}
+                      />
+                      {PRICING_MODE_LABEL[mode]}
+                    </label>
+                  ))}
                 </div>
-                <Button size="sm" onClick={savePrice}>
-                  Save
+
+                {pricingMode !== 'free' && (
+                  <div className="flex flex-wrap items-end gap-2">
+                    <div>
+                      <FieldLabel htmlFor="price">{PRICING_MODE_PRICE_LABEL[pricingMode]}</FieldLabel>
+                      <Input
+                        id="price"
+                        type="text"
+                        value={priceInput}
+                        onChange={(e) => setPriceInput(e.target.value)}
+                        placeholder="0.00"
+                        className="w-32"
+                      />
+                    </div>
+                    {pricingMode === 'subscription' && (
+                      <div>
+                        <FieldLabel htmlFor="included-quota">Included calls/mo (blank = unlimited)</FieldLabel>
+                        <Input
+                          id="included-quota"
+                          type="number"
+                          min={0}
+                          value={includedCallQuota}
+                          onChange={(e) => setIncludedCallQuota(e.target.value)}
+                          placeholder="unlimited"
+                          className="w-32"
+                        />
+                      </div>
+                    )}
+                    {wallet && Number(priceInput) > 0 && (
+                      <p className="text-xs text-ink/60">
+                        You keep ~৳{(Math.round(Number(priceInput) * (100 - Number(wallet.platform_cut_pct))) / 100).toFixed(2)},
+                        platform takes ৳{(Math.round(Number(priceInput) * Number(wallet.platform_cut_pct)) / 100).toFixed(2)}{' '}
+                        ({wallet.platform_cut_pct}%)
+                      </p>
+                    )}
+                  </div>
+                )}
+
+                <Button size="sm" onClick={savePricing}>
+                  Save pricing
                 </Button>
               </div>
             )}
           </section>
 
+          {wallet && (
+            <section className="mb-8">
+              <div className="flex flex-wrap items-center gap-4">
+                <StatChip value={`৳${wallet.earnings_bdt}`} label="Earnings" />
+                <Link to="/billing" className="text-sm font-bold text-orange-deep hover:text-orange">
+                  View wallet &amp; ledger &rarr;
+                </Link>
+              </div>
+            </section>
+          )}
+
           {customApi.visibility === 'shared' && (
             <section className="mb-8 space-y-4">
-              <div className="flex items-center justify-between">
+              <h2 className="text-h2">Allowed emails</h2>
+              <p className="text-sm text-ink/60">
+                Only these emails can accept an invite to this API — add someone here before sharing the link.
+              </p>
+              <div className="flex flex-wrap items-end gap-2">
+                <div>
+                  <FieldLabel htmlFor="allowed-email">Email</FieldLabel>
+                  <Input
+                    id="allowed-email"
+                    type="email"
+                    value={allowedEmailInput}
+                    onChange={(e) => setAllowedEmailInput(e.target.value)}
+                    placeholder="friend@example.com"
+                    className="w-64"
+                  />
+                </div>
+                <Button size="sm" onClick={addAllowedEmail}>
+                  Add
+                </Button>
+              </div>
+              {allowedEmails.length === 0 ? (
+                <p className="text-sm text-ink/60">
+                  No emails approved yet — no one can accept an invite until you add one.
+                </p>
+              ) : (
+                <ul className="space-y-2">
+                  {allowedEmails.map((a) => (
+                    <li
+                      key={a.id}
+                      className={`${cardClasses({ variant: 'quiet' })} flex items-center justify-between gap-3 py-3`}
+                    >
+                      <InlineCode>{a.email}</InlineCode>
+                      <Button variant="danger-ghost" size="sm" onClick={() => removeAllowedEmail(a.id)}>
+                        Remove
+                      </Button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+
+              <div className="flex items-center justify-between pt-2">
                 <h2 className="text-h2">Invites</h2>
                 <Button size="sm" onClick={createInvite}>
                   New invite

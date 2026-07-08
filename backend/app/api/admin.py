@@ -23,12 +23,14 @@ from app.models.billing import (
 from app.models.execution import ApiExecution, ExecutionStatus
 from app.models.plan_settings import PlanSettings
 from app.models.user import User, UserRole
+from app.models.wallet import BUCKET_EARNINGS, REASON_CASHOUT, CashoutRequest, CashoutStatus
 from app.models.workflow import Workflow
 from app.redis import redis_client
 from app.schemas.admin import (
     AdminApiOut,
     AdminApiUpdate,
     AdminAuditLogOut,
+    AdminCashoutOut,
     AdminKeyOut,
     AdminKeyUpdate,
     AdminPlanOut,
@@ -42,9 +44,12 @@ from app.schemas.admin import (
     AdminUserOut,
     AdminUserUpdate,
     AdminWorkflowOut,
+    CashoutPayRequest,
+    CashoutRejectRequest,
     RejectRequest,
 )
 from app.services import plans as plans_service
+from app.services import wallet as wallet_service
 from app.services.accounts import delete_user
 from app.services.audit import log_admin_action
 from app.services.sessions import user_sessions_key
@@ -64,12 +69,53 @@ def _dhaka_day(column):
     return func.date_trunc("day", func.timezone(settings.quota_tz, column))
 
 
-@router.get("/transactions", response_model=list[AdminTransactionOut])
-async def list_transactions(db: AsyncSession = Depends(get_db)) -> list[PaymentTransaction]:
-    result = await db.execute(
-        select(PaymentTransaction).order_by(PaymentTransaction.created_at.desc()).limit(200)
+async def _transaction_out(db: AsyncSession, t: PaymentTransaction) -> AdminTransactionOut:
+    user = await db.get(User, t.user_id)
+    return AdminTransactionOut(
+        id=t.id,
+        user_id=t.user_id,
+        user_email=user.email,
+        user_username=user.username,
+        purpose=t.purpose,
+        plan_tier=t.plan_tier,
+        api_id=t.api_id,
+        amount_expected_bdt=t.amount_expected_bdt,
+        amount_received_bdt=t.amount_received_bdt,
+        bkash_trx_id=t.bkash_trx_id,
+        status=t.status,
+        verification_method=t.verification_method,
+        note=t.note,
+        created_at=t.created_at,
     )
-    return list(result.scalars().all())
+
+
+@router.get("/transactions", response_model=list[AdminTransactionOut])
+async def list_transactions(db: AsyncSession = Depends(get_db)) -> list[AdminTransactionOut]:
+    result = await db.execute(
+        select(PaymentTransaction, User.email, User.username)
+        .join(User, User.id == PaymentTransaction.user_id)
+        .order_by(PaymentTransaction.created_at.desc())
+        .limit(200)
+    )
+    return [
+        AdminTransactionOut(
+            id=t.id,
+            user_id=t.user_id,
+            user_email=user_email,
+            user_username=user_username,
+            purpose=t.purpose,
+            plan_tier=t.plan_tier,
+            api_id=t.api_id,
+            amount_expected_bdt=t.amount_expected_bdt,
+            amount_received_bdt=t.amount_received_bdt,
+            bkash_trx_id=t.bkash_trx_id,
+            status=t.status,
+            verification_method=t.verification_method,
+            note=t.note,
+            created_at=t.created_at,
+        )
+        for t, user_email, user_username in result.all()
+    ]
 
 
 @router.post("/transactions/{transaction_id}/verify", response_model=AdminTransactionOut)
@@ -77,7 +123,7 @@ async def verify_transaction(
     transaction_id: uuid.UUID,
     admin: User = Depends(require_super_admin),
     db: AsyncSession = Depends(get_db),
-) -> PaymentTransaction:
+) -> AdminTransactionOut:
     result = await db.execute(
         select(PaymentTransaction).where(PaymentTransaction.id == transaction_id).with_for_update()
     )
@@ -101,7 +147,7 @@ async def verify_transaction(
     )
     await db.commit()
     await db.refresh(transaction)
-    return transaction
+    return await _transaction_out(db, transaction)
 
 
 @router.post("/transactions/{transaction_id}/reject", response_model=AdminTransactionOut)
@@ -110,7 +156,7 @@ async def reject_transaction(
     body: RejectRequest,
     admin: User = Depends(require_super_admin),
     db: AsyncSession = Depends(get_db),
-) -> PaymentTransaction:
+) -> AdminTransactionOut:
     transaction = await db.get(PaymentTransaction, transaction_id)
     if transaction is None:
         raise HTTPException(status_code=404, detail="transaction not found")
@@ -122,7 +168,110 @@ async def reject_transaction(
     )
     await db.commit()
     await db.refresh(transaction)
-    return transaction
+    return await _transaction_out(db, transaction)
+
+
+async def _cashout_out(db: AsyncSession, c: CashoutRequest) -> AdminCashoutOut:
+    user = await db.get(User, c.user_id)
+    return AdminCashoutOut(
+        id=c.id,
+        user_id=c.user_id,
+        user_email=user.email,
+        user_username=user.username,
+        amount_bdt=c.amount_bdt,
+        payout_msisdn=c.payout_msisdn,
+        status=c.status,
+        bkash_trx_id=c.bkash_trx_id,
+        note=c.note,
+        created_at=c.created_at,
+        decided_at=c.decided_at,
+    )
+
+
+@router.get("/cashouts", response_model=list[AdminCashoutOut])
+async def list_cashouts(db: AsyncSession = Depends(get_db)) -> list[AdminCashoutOut]:
+    result = await db.execute(
+        select(CashoutRequest, User.email, User.username)
+        .join(User, User.id == CashoutRequest.user_id)
+        .order_by(
+            case((CashoutRequest.status == CashoutStatus.REQUESTED, 0), else_=1),
+            CashoutRequest.created_at.desc(),
+        )
+    )
+    return [
+        AdminCashoutOut(
+            id=c.id,
+            user_id=c.user_id,
+            user_email=user_email,
+            user_username=user_username,
+            amount_bdt=c.amount_bdt,
+            payout_msisdn=c.payout_msisdn,
+            status=c.status,
+            bkash_trx_id=c.bkash_trx_id,
+            note=c.note,
+            created_at=c.created_at,
+            decided_at=c.decided_at,
+        )
+        for c, user_email, user_username in result.all()
+    ]
+
+
+@router.post("/cashouts/{cashout_id}/pay", response_model=AdminCashoutOut)
+async def pay_cashout(
+    cashout_id: uuid.UUID,
+    body: CashoutPayRequest,
+    admin: User = Depends(require_super_admin),
+    db: AsyncSession = Depends(get_db),
+) -> AdminCashoutOut:
+    cashout = await db.get(CashoutRequest, cashout_id)
+    if cashout is None:
+        raise HTTPException(status_code=404, detail="cashout request not found")
+    if cashout.status != CashoutStatus.REQUESTED:
+        raise HTTPException(status_code=400, detail=f"cannot pay a {cashout.status.value} cashout")
+
+    cashout.status = CashoutStatus.PAID
+    cashout.bkash_trx_id = body.bkash_trx_id
+    cashout.decided_by_user_id = admin.id
+    cashout.decided_at = datetime.now(timezone.utc)
+    log_admin_action(
+        db, admin, "cashout.pay", "cashout", cashout.id,
+        {"amount_bdt": str(cashout.amount_bdt), "bkash_trx_id": body.bkash_trx_id},
+    )
+    await db.commit()
+    await db.refresh(cashout)
+    return await _cashout_out(db, cashout)
+
+
+@router.post("/cashouts/{cashout_id}/reject", response_model=AdminCashoutOut)
+async def reject_cashout(
+    cashout_id: uuid.UUID,
+    body: CashoutRejectRequest,
+    admin: User = Depends(require_super_admin),
+    db: AsyncSession = Depends(get_db),
+) -> AdminCashoutOut:
+    cashout = await db.get(CashoutRequest, cashout_id)
+    if cashout is None:
+        raise HTTPException(status_code=404, detail="cashout request not found")
+    if cashout.status != CashoutStatus.REQUESTED:
+        raise HTTPException(status_code=400, detail=f"cannot reject a {cashout.status.value} cashout")
+
+    cashout.status = CashoutStatus.REJECTED
+    cashout.note = body.note
+    cashout.decided_by_user_id = admin.id
+    cashout.decided_at = datetime.now(timezone.utc)
+    # Return the held amount to the creator's earnings — a rejected request
+    # never left the platform, so nothing was ever actually cashed out.
+    await wallet_service.credit(
+        cashout.user_id, cashout.amount_bdt, REASON_CASHOUT, db,
+        bucket=BUCKET_EARNINGS, cashout_request_id=cashout.id,
+    )
+    log_admin_action(
+        db, admin, "cashout.reject", "cashout", cashout.id,
+        {"note": body.note, "amount_bdt": str(cashout.amount_bdt)},
+    )
+    await db.commit()
+    await db.refresh(cashout)
+    return await _cashout_out(db, cashout)
 
 
 @router.get("/sms", response_model=list[AdminSmsOut])
@@ -464,6 +613,10 @@ async def list_plan_settings(db: AsyncSession = Depends(get_db)) -> list[AdminPl
                 price_bdt=config.price_bdt,
                 daily_creation_limit=config.daily_creation_limit,
                 can_share=config.can_share,
+                monthly_call_quota=config.monthly_call_quota,
+                platform_cut_pct=config.platform_cut_pct,
+                can_cashout=config.can_cashout,
+                max_invitees_per_api=config.max_invitees_per_api,
                 updated_at=row.updated_at if row is not None else datetime.now(timezone.utc),
             )
         )
@@ -481,6 +634,8 @@ async def update_plan_settings(
 
     if tier == PlanTier.FREE and "price_bdt" in data and data["price_bdt"] != 0:
         raise HTTPException(status_code=400, detail="free tier price is locked at 0")
+    if tier == PlanTier.FREE and data.get("can_cashout"):
+        raise HTTPException(status_code=400, detail="free tier cannot cash out")
 
     row = await db.get(PlanSettings, tier.value)
     if row is None:
@@ -492,6 +647,10 @@ async def update_plan_settings(
             price_bdt=0 if tier == PlanTier.FREE else current.price_bdt,
             daily_creation_limit=current.daily_creation_limit,
             can_share=current.can_share,
+            monthly_call_quota=current.monthly_call_quota,
+            platform_cut_pct=current.platform_cut_pct,
+            can_cashout=current.can_cashout,
+            max_invitees_per_api=current.max_invitees_per_api,
         )
         db.add(row)
 
@@ -509,6 +668,23 @@ async def update_plan_settings(
         if data["can_share"] != row.can_share:
             changed["can_share"] = {"old": row.can_share, "new": data["can_share"]}
         row.can_share = data["can_share"]
+    if "monthly_call_quota" in data:
+        if data["monthly_call_quota"] != row.monthly_call_quota:
+            changed["monthly_call_quota"] = {"old": row.monthly_call_quota, "new": data["monthly_call_quota"]}
+        row.monthly_call_quota = data["monthly_call_quota"]
+    if "platform_cut_pct" in data:
+        if data["platform_cut_pct"] != row.platform_cut_pct:
+            changed["platform_cut_pct"] = {"old": str(row.platform_cut_pct), "new": str(data["platform_cut_pct"])}
+        row.platform_cut_pct = data["platform_cut_pct"]
+    if "can_cashout" in data:
+        new_can_cashout = False if tier == PlanTier.FREE else data["can_cashout"]
+        if new_can_cashout != row.can_cashout:
+            changed["can_cashout"] = {"old": row.can_cashout, "new": new_can_cashout}
+        row.can_cashout = new_can_cashout
+    if "max_invitees_per_api" in data:
+        if data["max_invitees_per_api"] != row.max_invitees_per_api:
+            changed["max_invitees_per_api"] = {"old": row.max_invitees_per_api, "new": data["max_invitees_per_api"]}
+        row.max_invitees_per_api = data["max_invitees_per_api"]
 
     if changed:
         log_admin_action(db, admin, "plan.update", "plan", tier.value, changed)
@@ -522,6 +698,10 @@ async def update_plan_settings(
         price_bdt=row.price_bdt,
         daily_creation_limit=row.daily_creation_limit,
         can_share=row.can_share,
+        monthly_call_quota=row.monthly_call_quota,
+        platform_cut_pct=row.platform_cut_pct,
+        can_cashout=row.can_cashout,
+        max_invitees_per_api=row.max_invitees_per_api,
         updated_at=row.updated_at,
     )
 
