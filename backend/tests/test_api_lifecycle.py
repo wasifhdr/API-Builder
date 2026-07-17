@@ -70,3 +70,38 @@ async def test_sync_workflow_to_api_updates_snapshot_and_marks_spec_pending(db, 
     assert refreshed.spec_status == SpecStatus.PENDING
     jobs = await redis.xrange("jobs:llm")
     assert len(jobs) == 1
+
+
+async def test_sync_endpoint_owner_updates_live_snapshot(db, make_user, redis, monkeypatch):
+    monkeypatch.setattr(publish_module, "redis_client", redis)
+    owner = await make_user()
+    workflow = await _make_workflow(db, owner)
+    api = await _make_api(db, owner, workflow, snapshot={"steps": [], "parameters": [], "extraction": {}})
+
+    result = await apis_api.sync_api(api_id=api.id, user=owner, db=db)
+
+    assert result.workflow_snapshot["parameters"] == workflow.parameters
+    assert result.spec_status == SpecStatus.PENDING
+
+
+async def test_sync_endpoint_requires_ready_workflow(db, make_user, redis, monkeypatch):
+    monkeypatch.setattr(publish_module, "redis_client", redis)
+    owner = await make_user()
+    workflow = await _make_workflow(db, owner, status=WorkflowStatus.DRAFT)
+    api = await _make_api(db, owner, workflow)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await apis_api.sync_api(api_id=api.id, user=owner, db=db)
+    assert exc_info.value.status_code == 400
+
+
+async def test_sync_endpoint_non_owner_gets_404(db, make_user, redis, monkeypatch):
+    monkeypatch.setattr(publish_module, "redis_client", redis)
+    owner = await make_user()
+    other = await make_user()
+    workflow = await _make_workflow(db, owner)
+    api = await _make_api(db, owner, workflow)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await apis_api.sync_api(api_id=api.id, user=other, db=db)
+    assert exc_info.value.status_code == 404
