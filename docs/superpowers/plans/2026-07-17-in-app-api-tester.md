@@ -448,7 +448,7 @@ Add state near the other `useState` hooks:
   const [status, setStatus] = useState<string | null>(null)
 ```
 
-Add these helpers inside the component (above `return`). `buildQuery` omits empty **optional** params; required params are sent even if empty so the server returns its real 422.
+Add these helpers inside the component (above `return`). `buildQuery` omits empty **optional** params; required params are sent even if empty so the server returns its real 422. `handleResponse` is the single place that maps an HTTP response to UI state — both the initial call and the 401 retry route through it, so there is no duplicated response-handling block.
 
 ```tsx
   function buildQuery(): string {
@@ -485,14 +485,36 @@ Add these helpers inside the component (above `return`). `buildQuery` omits empt
     }
     setError('Timed out waiting for the execution to finish.')
   }
+
+  // Maps one /v1/run response to UI state. The 401 branch here fires only
+  // when a retry is not applicable (grantee, or owner's second failure) —
+  // runReal handles the owner regenerate-and-retry before calling this.
+  async function handleResponse(res: Response, key: string): Promise<void> {
+    const body = await res.json().catch(() => ({} as Record<string, unknown>))
+    if (res.ok && 'data' in body) {
+      setResult(body as unknown as RunSuccess)
+    } else if (res.status === 202) {
+      setStatus('Running…')
+      await pollExecution(key, (body as unknown as RunAccepted).execution_id)
+    } else if (res.status === 422) {
+      const detail = (body as { detail?: unknown }).detail
+      setError(Array.isArray(detail) ? detail.join('; ') : 'Invalid parameters.')
+    } else if (res.status === 401) {
+      setError('Invalid or revoked API key.')
+    } else {
+      const d = (body as { detail?: unknown }).detail
+      const msg = typeof d === 'string' ? d : (d as { detail?: string } | undefined)?.detail
+      setError(msg ?? `Request failed (${res.status}).`)
+    }
+  }
 ```
 
 - [ ] **Step 2: Implement `runReal()`**
 
-Replace the stub. Handles 200 (result), 202 (poll), 422 (coercion errors list), 401 (owner regenerate-once, grantee message), and other errors. Uses the existing `generateOwnerKey()` and `activeKey`.
+Replace the stub. It sends the request, transparently regenerates the owner's key and retries **once** on a 401, then defers all response→state mapping to `handleResponse` (no duplicated handling block).
 
 ```tsx
-  async function runReal(retryOn401 = true) {
+  async function runReal() {
     const key = activeKey
     if (!key) return
     setRunning(true)
@@ -501,37 +523,16 @@ Replace the stub. Handles 200 (result), 202 (poll), 422 (coercion errors list), 
     setStatus(null)
     const qs = buildQuery()
     try {
-      const res = await callRun(key, qs)
-      const body = await res.json().catch(() => ({}))
-
-      if (res.ok && 'data' in body) {
-        setResult(body as RunSuccess)
-      } else if (res.status === 202) {
-        const accepted = body as RunAccepted
-        setStatus('Running…')
-        await pollExecution(key, accepted.execution_id)
-      } else if (res.status === 422) {
-        const detail = body.detail
-        setError(Array.isArray(detail) ? detail.join('; ') : 'Invalid parameters.')
-      } else if (res.status === 401) {
-        if (isOwner && retryOn401) {
-          localStorage.removeItem(OWNER_KEY_SLOT)
-          setOwnerKey(null)
-          const fresh = await generateOwnerKey()
-          setRunning(false)
-          // retry once with the fresh key
-          const res2 = await callRun(fresh, qs)
-          const body2 = await res2.json().catch(() => ({}))
-          if (res2.ok && 'data' in body2) setResult(body2 as RunSuccess)
-          else if (res2.status === 202) { setStatus('Running…'); await pollExecution(fresh, (body2 as RunAccepted).execution_id) }
-          else setError(typeof body2.detail === 'string' ? body2.detail : 'Request failed.')
-        } else {
-          setError('Invalid or revoked API key.')
-        }
-      } else {
-        const d = body.detail
-        setError(typeof d === 'string' ? d : d?.detail ?? `Request failed (${res.status}).`)
+      let useKey = key
+      let res = await callRun(useKey, qs)
+      if (res.status === 401 && isOwner) {
+        // key was likely revoked — regenerate once and retry
+        localStorage.removeItem(OWNER_KEY_SLOT)
+        setOwnerKey(null)
+        useKey = await generateOwnerKey()
+        res = await callRun(useKey, qs)
       }
+      await handleResponse(res, useKey)
     } catch {
       setError('Network error calling the API.')
     } finally {
@@ -540,7 +541,7 @@ Replace the stub. Handles 200 (result), 202 (poll), 422 (coercion errors list), 
   }
 ```
 
-Update the Run button to reflect running state and the default-arg signature:
+Update the Run button to reflect running state:
 
 ```tsx
       <Button onClick={() => runReal()} disabled={!canRun || running}>
@@ -606,4 +607,4 @@ git commit -m "feat(ui): wire TryItPanel run, async poll, result and error handl
 
 **Type consistency:** `ParameterOut` (backend) mirrors `Parameter` (frontend, existing). `get_api_parameters` name matches between Task 1 endpoint and its test. `RunSuccess`/`RunAccepted`/`ExecutionPending` defined in Task 2, consumed in Task 3. `generateOwnerKey`, `activeKey`, `OWNER_KEY_SLOT`, `buildQuery`, `pollExecution`, `callRun` names are consistent across Tasks 2–3. The public 200 envelope (`{data, meta}`) and 202 envelope (`{execution_id, status_url}`) match `backend/app/api/public.py`.
 
-**Note on 403/429/402:** These are surfaced by the generic `else` branch in `runReal` (Task 3 Step 2), which reads `body.detail` (string) or `body.detail.detail` (structured), covering "no access", "rate limit exceeded", and "insufficient wallet balance" messages without special-casing each.
+**Note on 403/429/402:** These are surfaced by the generic `else` branch in `handleResponse` (Task 3 Step 1), which reads `body.detail` (string) or `body.detail.detail` (structured), covering "no access", "rate limit exceeded", and "insufficient wallet balance" messages without special-casing each. Both the initial call and the owner 401-retry route through `handleResponse`, so there is no duplicated response-handling block.
