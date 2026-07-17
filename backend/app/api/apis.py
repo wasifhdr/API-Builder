@@ -23,6 +23,7 @@ from app.schemas.api import (
     ApiStatsOut,
     CustomApiOut,
     CustomApiUpdate,
+    ParameterOut,
 )
 from app.schemas.invite import AddAllowedEmailRequest, AllowedEmailOut, CreateInviteRequest, GrantOut, InviteOut
 from app.services.grants import has_access
@@ -71,6 +72,17 @@ async def get_api(
     db: AsyncSession = Depends(get_db),
 ) -> CustomApi:
     return await _get_visible_api(api_id, user, db)
+
+
+@router.get("/{api_id}/parameters", response_model=list[ParameterOut])
+async def get_api_parameters(
+    api_id: uuid.UUID,
+    user: User = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+) -> list[ParameterOut]:
+    api = await _get_visible_api(api_id, user, db)
+    raw = api.workflow_snapshot.get("parameters", [])
+    return [ParameterOut(**p) for p in raw]
 
 
 @router.patch("/{api_id}", response_model=CustomApiOut)

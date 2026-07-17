@@ -40,6 +40,15 @@ class CustomApiUpdate(BaseModel):
     included_call_quota: int | None = None
 
 
+class ParameterOut(BaseModel):
+    name: str
+    type: str = "string"
+    required: bool = True
+    example: str | None = None
+    description: str | None = None
+    source_step: int | None = None
+
+
 class ApiExecutionOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
