@@ -136,3 +136,22 @@ async def test_delete_api_non_owner_gets_404(db, make_user):
         await apis_api.delete_api(api_id=api.id, user=other, db=db)
     assert exc_info.value.status_code == 404
     assert await db.get(CustomApi, api.id) is not None
+
+
+async def test_get_workflow_reports_published_api(db, make_user):
+    owner = await make_user()
+    workflow = await _make_workflow(db, owner)
+    api = await _make_api(db, owner, workflow)
+
+    out = await workflows_api.get_workflow(workflow_id=workflow.id, user=owner, db=db)
+    assert out.published_api_id == api.id
+    assert out.published_api_slug == api.slug
+
+
+async def test_get_workflow_unpublished_has_null_published_fields(db, make_user):
+    owner = await make_user()
+    workflow = await _make_workflow(db, owner)
+
+    out = await workflows_api.get_workflow(workflow_id=workflow.id, user=owner, db=db)
+    assert out.published_api_id is None
+    assert out.published_api_slug is None

@@ -23,6 +23,21 @@ async def _get_owned_workflow(workflow_id: uuid.UUID, user: User, db: AsyncSessi
     return workflow
 
 
+async def _serialize_workflow(workflow: Workflow, db: AsyncSession) -> WorkflowOut:
+    row = (
+        await db.execute(
+            select(CustomApi.id, CustomApi.slug).where(CustomApi.workflow_id == workflow.id)
+        )
+    ).first()
+    base = WorkflowOut.model_validate(workflow)
+    return base.model_copy(
+        update={
+            "published_api_id": row.id if row else None,
+            "published_api_slug": row.slug if row else None,
+        }
+    )
+
+
 @router.get("", response_model=list[WorkflowListItem])
 async def list_workflows(
     user: User = Depends(current_user),
@@ -47,8 +62,8 @@ async def get_workflow(
     workflow_id: uuid.UUID,
     user: User = Depends(current_user),
     db: AsyncSession = Depends(get_db),
-) -> Workflow:
-    return await _get_owned_workflow(workflow_id, user, db)
+) -> WorkflowOut:
+    return await _serialize_workflow(await _get_owned_workflow(workflow_id, user, db), db)
 
 
 @router.patch("/{workflow_id}", response_model=WorkflowOut)
@@ -57,7 +72,7 @@ async def update_workflow(
     body: WorkflowUpdate,
     user: User = Depends(current_user),
     db: AsyncSession = Depends(get_db),
-) -> Workflow:
+) -> WorkflowOut:
     workflow = await _get_owned_workflow(workflow_id, user, db)
     data = body.model_dump(exclude_unset=True)
     if data.get("name"):
@@ -68,7 +83,7 @@ async def update_workflow(
         workflow.extraction = data["extraction"]
     await db.commit()
     await db.refresh(workflow)
-    return workflow
+    return await _serialize_workflow(workflow, db)
 
 
 @router.delete("/{workflow_id}", status_code=204)
