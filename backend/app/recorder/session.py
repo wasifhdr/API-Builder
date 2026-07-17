@@ -114,6 +114,15 @@ class RecordingSession:
         page = context.pages[0] if context.pages else await context.new_page()
         self.page = page
 
+        # End the session the moment the browser goes away — the user closed
+        # the Chromium window, or it crashed. Without this the session lingers
+        # (browser dead, nothing to record) until the 10-min idle watchdog,
+        # holding the single recording slot (REC_MAX_CONCURRENCY=1) the whole
+        # time; every new recording then starves — its job is never read, no
+        # heartbeat is published, and the client's WS reports "died" after its
+        # 20s grace ("RECORDER CRASHED", 0 steps) until the zombie times out.
+        context.on("close", lambda _=None: self._stop.set())
+
         async def on_event(source, event: dict) -> None:
             await self._handle_page_event(event)
 
