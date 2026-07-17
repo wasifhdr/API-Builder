@@ -446,3 +446,18 @@ export interface AdminStats {
   revenue_verified_bdt: string
   pending_payments: number
 }
+
+export interface RunSuccess {
+  data: unknown
+  meta: { cached: boolean; duration_ms?: number; execution_id?: string }
+}
+
+export interface RunAccepted {
+  execution_id: string
+  status_url: string
+}
+
+export interface ExecutionPending {
+  execution_id: string
+  status: 'queued' | 'running'
+}

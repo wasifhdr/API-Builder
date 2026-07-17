@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import AppShell from '../components/AppShell'
+import TryItPanel from '../components/TryItPanel'
 import {
   Badge,
   type BadgeVariant,
@@ -284,9 +285,12 @@ export default function ApiDetail() {
         )}
       </div>
 
-      <section className="mb-8">
-        <h2 className="text-h2 mb-2">Try it</h2>
-        <CodeBlock lang="bash" code={curlExample} />
+      <section className="mb-8 space-y-4">
+        <TryItPanel apiId={customApi.id} slug={customApi.slug} isOwner={isOwner} />
+        <div>
+          <CapsLabel tone="muted" className="mb-2">Or with curl</CapsLabel>
+          <CodeBlock lang="bash" code={curlExample} />
+        </div>
       </section>
 
       {isOwner && (
