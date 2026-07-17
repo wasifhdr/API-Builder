@@ -6,7 +6,7 @@ from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import ValidationError
-from sqlalchemy import case, func, select
+from sqlalchemy import case, delete, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -170,6 +170,24 @@ async def sync_api(
         )
     await sync_workflow_to_api(api, workflow, db)
     return api
+
+
+@router.delete("/{api_id}", status_code=204)
+async def delete_api(
+    api_id: uuid.UUID,
+    user: User = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    api = await _get_owned_api(api_id, user, db)
+    # Deleting the workflow cascades to this API (custom_apis.workflow_id is
+    # ON DELETE CASCADE) and, transitively, its executions/grants/invites —
+    # the same mechanism as admin.delete_admin_workflow. "Delete" means gone.
+    workflow_id = api.workflow_id
+    if workflow_id is not None:
+        await db.execute(delete(Workflow).where(Workflow.id == workflow_id))
+    else:
+        await db.execute(delete(CustomApi).where(CustomApi.id == api_id))
+    await db.commit()
 
 
 @router.get("/{api_id}/executions", response_model=list[ApiExecutionOut])

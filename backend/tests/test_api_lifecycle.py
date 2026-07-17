@@ -6,6 +6,7 @@ from fastapi import HTTPException
 from app.api import apis as apis_api
 from app.api import workflows as workflows_api
 from app.models.api import CustomApi, SpecStatus
+from app.models.execution import ApiExecution, ExecutionStatus
 from app.models.user import User, UserRole
 from app.models.workflow import Workflow, WorkflowStatus
 from app.services import publish as publish_module
@@ -105,3 +106,33 @@ async def test_sync_endpoint_non_owner_gets_404(db, make_user, redis, monkeypatc
     with pytest.raises(HTTPException) as exc_info:
         await apis_api.sync_api(api_id=api.id, user=other, db=db)
     assert exc_info.value.status_code == 404
+
+
+async def test_delete_api_owner_removes_api_and_workflow_and_executions(db, make_user):
+    owner = await make_user()
+    workflow = await _make_workflow(db, owner)
+    api = await _make_api(db, owner, workflow)
+    execution = ApiExecution(api_id=api.id, status=ExecutionStatus.SUCCEEDED)
+    db.add(execution)
+    await db.commit()
+    await db.refresh(execution)
+    api_id, wf_id, exec_id = api.id, workflow.id, execution.id
+
+    await apis_api.delete_api(api_id=api_id, user=owner, db=db)
+    db.expunge_all()
+
+    assert await db.get(CustomApi, api_id) is None
+    assert await db.get(Workflow, wf_id) is None
+    assert await db.get(ApiExecution, exec_id) is None
+
+
+async def test_delete_api_non_owner_gets_404(db, make_user):
+    owner = await make_user()
+    other = await make_user()
+    workflow = await _make_workflow(db, owner)
+    api = await _make_api(db, owner, workflow)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await apis_api.delete_api(api_id=api.id, user=other, db=db)
+    assert exc_info.value.status_code == 404
+    assert await db.get(CustomApi, api.id) is not None
