@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Badge, Button, Checkbox, FieldHelp, FieldLabel, Input, cardClasses } from './ui'
+import { Badge, Button, Checkbox, CodeBlock, FieldHelp, FieldLabel, Input, cardClasses } from './ui'
 import { ApiError, api } from '../lib/api'
-import type { Parameter } from '../lib/types'
+import type { Parameter, RunAccepted, RunSuccess } from '../lib/types'
 
 const OWNER_KEY_SLOT = 'apibuilder.testerKey'
 const GRANTEE_KEY_SLOT = 'apibuilder.granteeTesterKey'
@@ -26,6 +26,9 @@ export default function TryItPanel({
   const [granteeKey, setGranteeKey] = useState<string>(() => sessionStorage.getItem(GRANTEE_KEY_SLOT) ?? '')
   const [error, setError] = useState<string | null>(null)
   const [generating, setGenerating] = useState(false)
+  const [running, setRunning] = useState(false)
+  const [result, setResult] = useState<RunSuccess | null>(null)
+  const [status, setStatus] = useState<string | null>(null)
 
   useEffect(() => {
     api
@@ -56,8 +59,87 @@ export default function TryItPanel({
     setValues((prev) => ({ ...prev, [name]: value }))
   }
 
+  function buildQuery(): string {
+    const qs = new URLSearchParams()
+    for (const p of params) {
+      const v = values[p.name] ?? ''
+      if (v === '' && !p.required) continue
+      qs.set(p.name, v)
+    }
+    return qs.toString()
+  }
+
+  async function callRun(key: string, qs: string): Promise<Response> {
+    return fetch(`/v1/run/${slug}${qs ? `?${qs}` : ''}`, { headers: { 'X-API-Key': key } })
+  }
+
+  async function pollExecution(key: string, executionId: string): Promise<void> {
+    const deadline = Date.now() + 30_000
+    while (Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 1200))
+      const res = await fetch(`/v1/executions/${executionId}`, { headers: { 'X-API-Key': key } })
+      const body = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        setError(typeof body.detail === 'string' ? body.detail : 'Execution failed')
+        return
+      }
+      if (body.status === 'queued' || body.status === 'running') {
+        setStatus(`Running… (${body.status})`)
+        continue
+      }
+      setResult(body as RunSuccess) // terminal: has data + meta
+      setStatus(null)
+      return
+    }
+    setError('Timed out waiting for the execution to finish.')
+  }
+
+  // Maps one /v1/run response to UI state. The 401 branch here fires only
+  // when a retry is not applicable (grantee, or owner's second failure) —
+  // runReal handles the owner regenerate-and-retry before calling this.
+  async function handleResponse(res: Response, key: string): Promise<void> {
+    const body = await res.json().catch(() => ({} as Record<string, unknown>))
+    if (res.ok && 'data' in body) {
+      setResult(body as unknown as RunSuccess)
+    } else if (res.status === 202) {
+      setStatus('Running…')
+      await pollExecution(key, (body as unknown as RunAccepted).execution_id)
+    } else if (res.status === 422) {
+      const detail = (body as { detail?: unknown }).detail
+      setError(Array.isArray(detail) ? detail.join('; ') : 'Invalid parameters.')
+    } else if (res.status === 401) {
+      setError('Invalid or revoked API key.')
+    } else {
+      const d = (body as { detail?: unknown }).detail
+      const msg = typeof d === 'string' ? d : (d as { detail?: string } | undefined)?.detail
+      setError(msg ?? `Request failed (${res.status}).`)
+    }
+  }
+
   async function runReal() {
-    // wired in Task 3
+    const key = activeKey
+    if (!key) return
+    setRunning(true)
+    setError(null)
+    setResult(null)
+    setStatus(null)
+    const qs = buildQuery()
+    try {
+      let useKey = key
+      let res = await callRun(useKey, qs)
+      if (res.status === 401 && isOwner) {
+        // key was likely revoked — regenerate once and retry
+        localStorage.removeItem(OWNER_KEY_SLOT)
+        setOwnerKey(null)
+        useKey = await generateOwnerKey()
+        res = await callRun(useKey, qs)
+      }
+      await handleResponse(res, useKey)
+    } catch {
+      setError('Network error calling the API.')
+    } finally {
+      setRunning(false)
+    }
   }
 
   const canRun = useMemo(() => activeKey !== null, [activeKey])
@@ -138,11 +220,26 @@ export default function TryItPanel({
         </div>
       )}
 
-      <Button onClick={runReal} disabled={!canRun}>
-        Run
+      <Button onClick={() => runReal()} disabled={!canRun || running}>
+        {running ? 'Running…' : 'Run'}
       </Button>
       {!canRun && (
         <FieldHelp>{isOwner ? 'Generate a test key to run.' : 'Paste your API key to run.'}</FieldHelp>
+      )}
+
+      {status && <p className="text-sm font-medium text-ink/70">{status}</p>}
+
+      {result && (
+        <div className="space-y-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <Badge variant="success">200 OK</Badge>
+            {result.meta?.cached && <Badge variant="info">cached</Badge>}
+            {result.meta?.duration_ms != null && (
+              <Badge variant="neutral">{Math.round(result.meta.duration_ms)}ms</Badge>
+            )}
+          </div>
+          <CodeBlock lang="json" code={JSON.stringify(result.data, null, 2)} />
+        </div>
       )}
     </section>
   )
