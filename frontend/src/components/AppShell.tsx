@@ -1,77 +1,85 @@
-import type { ReactNode } from 'react'
-import { Link, NavLink, useLocation } from 'react-router-dom'
+import { useEffect, useState, type ReactNode } from 'react'
+import { Link } from 'react-router-dom'
 import { useSession } from '../hooks/useSession'
-import type { PlanTier } from '../lib/types'
+import Sidebar from './Sidebar'
+import { MenuIcon } from './nav-icons'
 
-const NAV_LINKS = [
-  { to: '/dashboard', label: 'Dashboard' },
-  { to: '/keys', label: 'API Keys' },
-  { to: '/billing', label: 'Billing' },
-  { to: '/profile', label: 'Profile' },
-  { to: '/settings', label: 'Settings' },
-]
-
-const TIER_CHROME: Record<PlanTier, string> = {
-  free: 'bg-cream/20 text-cream',
-  pro: 'bg-gold text-ink',
-  max: 'bg-purple text-paper',
-}
-
-const LINK_CLASS = 'rounded-pill px-3 py-1.5 text-sm font-bold transition-colors duration-100 focus-visible:outline-[3px] focus-visible:outline-gold focus-visible:outline-offset-2'
-const LINK_INACTIVE = 'text-cream/75 hover:bg-paper/10 hover:text-paper'
-const LINK_ACTIVE = 'bg-paper/10 text-gold'
+const COLLAPSE_KEY = 'apibuilder.sidebarCollapsed'
 
 export default function AppShell({ children }: { children: ReactNode }) {
   const { user, logout } = useSession()
-  const location = useLocation()
-  const isAdminActive = location.pathname.startsWith('/admin')
+  const [collapsed, setCollapsed] = useState<boolean>(
+    () => typeof window !== 'undefined' && localStorage.getItem(COLLAPSE_KEY) === 'true',
+  )
+  const [mobileOpen, setMobileOpen] = useState(false)
+
+  function toggleCollapse() {
+    setCollapsed((c) => {
+      const next = !c
+      localStorage.setItem(COLLAPSE_KEY, String(next))
+      return next
+    })
+  }
+
+  const closeMobile = () => setMobileOpen(false)
+
+  // Close the mobile drawer if the viewport grows to desktop width.
+  useEffect(() => {
+    const mq = window.matchMedia('(min-width: 768px)')
+    const onChange = (e: MediaQueryListEvent) => e.matches && setMobileOpen(false)
+    mq.addEventListener('change', onChange)
+    return () => mq.removeEventListener('change', onChange)
+  }, [])
 
   return (
     <div className="min-h-screen bg-cream">
-      <header className="sticky top-0 z-40 bg-ink text-paper">
-        <div className="mx-auto flex h-14 max-w-6xl items-center justify-between px-6">
-          <div className="flex items-center gap-6">
-            <Link to="/dashboard" className="font-display text-lg font-extrabold tracking-tight text-paper">
-              API Builder
-            </Link>
-            <nav className="hidden items-center gap-1 md:flex">
-              {NAV_LINKS.map((l) => (
-                <NavLink
-                  key={l.to}
-                  to={l.to}
-                  className={({ isActive }) => `${LINK_CLASS} ${isActive ? LINK_ACTIVE : LINK_INACTIVE}`}
-                >
-                  {l.label}
-                </NavLink>
-              ))}
-              {user?.role === 'super_admin' && (
-                <Link
-                  to="/admin/transactions"
-                  className={`${LINK_CLASS} ${isAdminActive ? LINK_ACTIVE : LINK_INACTIVE}`}
-                >
-                  Admin
-                </Link>
-              )}
-            </nav>
-          </div>
-          {user && (
-            <div className="flex items-center gap-3">
-              <span className="hidden text-xs text-cream/60 sm:inline">{user.email}</span>
-              <span className={`inline-flex items-center rounded-pill px-2.5 py-0.5 text-label uppercase ${TIER_CHROME[user.tier]}`}>
-                {user.tier}
-              </span>
-              <button
-                type="button"
-                onClick={() => logout()}
-                className={`${LINK_CLASS} ${LINK_INACTIVE}`}
-              >
-                Log out
-              </button>
-            </div>
-          )}
+      {/* Mobile top strip */}
+      <div className="sticky top-0 z-40 flex h-14 items-center gap-3 bg-ink px-4 text-paper md:hidden">
+        <button
+          type="button"
+          onClick={() => setMobileOpen(true)}
+          aria-label="Open menu"
+          className="rounded-control p-1.5 text-cream/75 hover:bg-paper/10 hover:text-paper focus-visible:outline-[3px] focus-visible:outline-gold focus-visible:outline-offset-2"
+        >
+          <MenuIcon className="size-6" />
+        </button>
+        <Link to="/dashboard" className="font-display text-lg font-extrabold tracking-tight text-paper">
+          API Builder
+        </Link>
+      </div>
+
+      {/* Desktop sidebar (fixed) */}
+      <aside
+        className={`fixed inset-y-0 left-0 z-40 hidden transition-[width] duration-200 md:block ${collapsed ? 'w-16' : 'w-60'}`}
+      >
+        <Sidebar
+          user={user}
+          collapsed={collapsed}
+          onLogout={logout}
+          onToggleCollapse={toggleCollapse}
+        />
+      </aside>
+
+      {/* Mobile drawer overlay */}
+      {mobileOpen && (
+        <div className="fixed inset-0 z-50 md:hidden">
+          <div className="absolute inset-0 bg-ink/60" onClick={closeMobile} aria-hidden />
+          <aside className="absolute inset-y-0 left-0 w-64 shadow-offset">
+            <Sidebar
+              user={user}
+              collapsed={false}
+              onLogout={logout}
+              onNavigate={closeMobile}
+              onClose={closeMobile}
+            />
+          </aside>
         </div>
-      </header>
-      <main className="mx-auto max-w-6xl px-6 py-8">{children}</main>
+      )}
+
+      {/* Content */}
+      <div className={`transition-[padding] duration-200 ${collapsed ? 'md:pl-16' : 'md:pl-60'}`}>
+        <main className="mx-auto max-w-6xl px-6 py-8">{children}</main>
+      </div>
     </div>
   )
 }
