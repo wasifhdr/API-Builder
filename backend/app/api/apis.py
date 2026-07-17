@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import ValidationError
 from sqlalchemy import case, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -82,7 +83,13 @@ async def get_api_parameters(
 ) -> list[ParameterOut]:
     api = await _get_visible_api(api_id, user, db)
     raw = api.workflow_snapshot.get("parameters", [])
-    return [ParameterOut(**p) for p in raw]
+    result: list[ParameterOut] = []
+    for p in raw:
+        try:
+            result.append(ParameterOut(**p))
+        except (TypeError, ValidationError):
+            continue  # skip malformed stored parameter entries rather than 500 the whole panel
+    return result
 
 
 @router.patch("/{api_id}", response_model=CustomApiOut)

@@ -80,6 +80,7 @@ export default function TryItPanel({
       const res = await fetch(`/v1/executions/${executionId}`, { headers: { 'X-API-Key': key } })
       const body = await res.json().catch(() => ({}))
       if (!res.ok) {
+        setStatus(null)
         setError(typeof body.detail === 'string' ? body.detail : 'Execution failed')
         return
       }
@@ -91,6 +92,7 @@ export default function TryItPanel({
       setStatus(null)
       return
     }
+    setStatus(null)
     setError('Timed out waiting for the execution to finish.')
   }
 
@@ -111,7 +113,8 @@ export default function TryItPanel({
       setError('Invalid or revoked API key.')
     } else {
       const d = (body as { detail?: unknown }).detail
-      const msg = typeof d === 'string' ? d : (d as { detail?: string } | undefined)?.detail
+      const obj = typeof d === 'object' && d !== null ? (d as { detail?: string; message?: string }) : undefined
+      const msg = typeof d === 'string' ? d : (obj?.detail ?? obj?.message)
       setError(msg ?? `Request failed (${res.status}).`)
     }
   }
@@ -136,6 +139,7 @@ export default function TryItPanel({
       }
       await handleResponse(res, useKey)
     } catch {
+      setStatus(null)
       setError('Network error calling the API.')
     } finally {
       setRunning(false)

@@ -88,3 +88,13 @@ async def test_missing_api_returns_404(db, make_user):
     with pytest.raises(HTTPException) as exc_info:
         await apis_api.get_api_parameters(api_id=uuid.uuid4(), user=owner, db=db)
     assert exc_info.value.status_code == 404
+
+
+async def test_malformed_parameter_entry_is_skipped(db, make_user):
+    owner = await make_user()
+    api = await _make_api(db, owner, parameters=[
+        {"name": "good", "type": "string"},
+        {"type": "string"},  # missing required "name" — must be skipped, not 500
+    ])
+    result = await apis_api.get_api_parameters(api_id=api.id, user=owner, db=db)
+    assert [p.name for p in result] == ["good"]

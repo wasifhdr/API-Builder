@@ -456,8 +456,3 @@ export interface RunAccepted {
   execution_id: string
   status_url: string
 }
-
-export interface ExecutionPending {
-  execution_id: string
-  status: 'queued' | 'running'
-}
