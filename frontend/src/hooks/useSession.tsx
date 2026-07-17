@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from 'react'
+import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react'
 import { api, ApiError } from '../lib/api'
 import type { RegisterPayload, User } from '../lib/types'
 
@@ -16,9 +16,10 @@ const SessionContext = createContext<SessionState | null>(null)
 export function SessionProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null)
   const [loading, setLoading] = useState(true)
+  const hasDeterminedAuth = useRef(false)
 
   const refetch = useCallback(async () => {
-    setLoading(true)
+    if (!hasDeterminedAuth.current) setLoading(true)
     try {
       setUser(await api.get<User>('/me'))
     } catch (err) {
@@ -28,6 +29,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         throw err
       }
     } finally {
+      hasDeterminedAuth.current = true
       setLoading(false)
     }
   }, [])
