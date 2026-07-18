@@ -6,9 +6,11 @@ import {
   Badge,
   Button,
   buttonClasses,
+  cardClasses,
   CapsLabel,
   Checkbox,
   FieldLabel,
+  InlineCode,
   Input,
   PageHeader,
   Select,
@@ -30,6 +32,8 @@ interface WorkflowDetail {
   steps: Step[]
   parameters: Parameter[]
   extraction: { main?: ExtractionConfig }
+  published_api_id: string | null
+  published_api_slug: string | null
 }
 
 const EMPTY_EXTRACTION: ExtractionConfig = { mode: 'list', root: '', fields: [] }
@@ -45,8 +49,11 @@ export default function WorkflowEditor() {
   const [publishing, setPublishing] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const [confirmingDelete, setConfirmingDelete] = useState(false)
+  const [syncing, setSyncing] = useState(false)
+  const [rerecording, setRerecording] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [saveMessage, setSaveMessage] = useState<string | null>(null)
+  const isPublished = !!workflow?.published_api_id
 
   useEffect(() => {
     api
@@ -109,6 +116,33 @@ export default function WorkflowEditor() {
     }
   }
 
+  async function handleSync() {
+    if (!workflow?.published_api_id) return
+    setSyncing(true)
+    setError(null)
+    setSaveMessage(null)
+    try {
+      await api.post(`/apis/${workflow.published_api_id}/sync`)
+      setSaveMessage('Live API updated.')
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Failed to sync')
+    } finally {
+      setSyncing(false)
+    }
+  }
+
+  async function handleRerecord() {
+    setRerecording(true)
+    setError(null)
+    try {
+      await api.post(`/workflows/${workflowId}/rerecord`)
+      navigate(`/recorder/${workflowId}`)
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Failed to start re-record')
+      setRerecording(false)
+    }
+  }
+
   if (!workflow) {
     return (
       <AppShell>
@@ -127,6 +161,18 @@ export default function WorkflowEditor() {
         title={workflow.name}
         actions={<Badge variant="neutral">{workflow.status}</Badge>}
       />
+
+      {isPublished && (
+        <div className={`${cardClasses({ variant: 'callout', accent: 'blue' })} mb-6 flex items-center justify-between gap-3`}>
+          <span className="text-sm text-ink/80">
+            Live as <InlineCode>/v1/run/{workflow.published_api_slug}</InlineCode>. Edits here don&apos;t affect the
+            live API until you sync.
+          </span>
+          <Link to={`/apis/${workflow.published_api_id}`} className={buttonClasses('ghost', 'sm')}>
+            Open API &rarr;
+          </Link>
+        </div>
+      )}
 
       {error && <p className="mb-4 text-sm font-medium text-red-deep">{error}</p>}
       {saveMessage && <p className="mb-4 text-sm font-medium text-green-deep">{saveMessage}</p>}
@@ -221,25 +267,39 @@ export default function WorkflowEditor() {
         <Button variant="primary" onClick={handleSave} disabled={saving}>
           {saving ? 'Saving…' : 'Save changes'}
         </Button>
-        {workflow.status === 'ready' && (
-          <Button variant="ink" onClick={handlePublish} disabled={publishing}>
-            {publishing ? 'Publishing…' : 'Publish as API'}
-          </Button>
-        )}
-        {confirmingDelete ? (
-          <div className="ml-auto flex items-center gap-2">
-            <span className="text-sm text-ink/70">Delete this workflow? This can&apos;t be undone.</span>
-            <Button variant="danger-ghost" onClick={handleDelete} disabled={deleting}>
-              {deleting ? 'Deleting…' : 'Confirm delete'}
+
+        {isPublished ? (
+          <>
+            <Button variant="default" onClick={handleRerecord} disabled={rerecording}>
+              {rerecording ? 'Starting…' : 'Re-record'}
             </Button>
-            <Button variant="ghost" onClick={() => setConfirmingDelete(false)} disabled={deleting}>
-              Cancel
+            <Button variant="ink" onClick={handleSync} disabled={syncing}>
+              {syncing ? 'Syncing…' : 'Sync changes to live API'}
             </Button>
-          </div>
+          </>
         ) : (
-          <Button variant="danger-ghost" className="ml-auto" onClick={() => setConfirmingDelete(true)}>
-            Delete workflow
-          </Button>
+          <>
+            {workflow.status === 'ready' && (
+              <Button variant="ink" onClick={handlePublish} disabled={publishing}>
+                {publishing ? 'Publishing…' : 'Publish as API'}
+              </Button>
+            )}
+            {confirmingDelete ? (
+              <div className="ml-auto flex items-center gap-2">
+                <span className="text-sm text-ink/70">Delete this workflow? This can&apos;t be undone.</span>
+                <Button variant="danger-ghost" onClick={handleDelete} disabled={deleting}>
+                  {deleting ? 'Deleting…' : 'Confirm delete'}
+                </Button>
+                <Button variant="ghost" onClick={() => setConfirmingDelete(false)} disabled={deleting}>
+                  Cancel
+                </Button>
+              </div>
+            ) : (
+              <Button variant="danger-ghost" className="ml-auto" onClick={() => setConfirmingDelete(true)}>
+                Delete workflow
+              </Button>
+            )}
+          </>
         )}
       </div>
     </AppShell>

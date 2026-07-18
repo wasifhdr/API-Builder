@@ -160,6 +160,17 @@ class AdminWorkflowOut(BaseModel):
     created_at: datetime
 
 
+class AdminWorkflowDetailOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    name: str
+    status: WorkflowStatus
+    steps: list
+    parameters: list
+    extraction: dict
+
+
 class AdminStatsDayOut(BaseModel):
     date: str
     total: int

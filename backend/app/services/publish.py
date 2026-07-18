@@ -26,16 +26,28 @@ async def _unique_slug(base: str, db: AsyncSession) -> str:
     raise RuntimeError("could not generate a unique slug")
 
 
-async def publish_workflow(workflow: Workflow, db: AsyncSession) -> CustomApi:
-    slug = await _unique_slug(_slugify(workflow.name), db)
-
-    workflow_snapshot = {
+def build_snapshot(workflow: Workflow) -> dict:
+    return {
         "steps": workflow.steps,
         "parameters": workflow.parameters,
         "extraction": workflow.extraction,
         "output_schema": workflow.output_schema,
         "browser_settings": workflow.browser_settings,
     }
+
+
+async def sync_workflow_to_api(api: CustomApi, workflow: Workflow, db: AsyncSession) -> None:
+    api.workflow_snapshot = build_snapshot(workflow)
+    api.spec_status = SpecStatus.PENDING
+    await db.commit()
+    await db.refresh(api)
+    await redis_client.xadd("jobs:llm", {"payload": json.dumps({"api_id": str(api.id)})})
+
+
+async def publish_workflow(workflow: Workflow, db: AsyncSession) -> CustomApi:
+    slug = await _unique_slug(_slugify(workflow.name), db)
+
+    workflow_snapshot = build_snapshot(workflow)
 
     api = CustomApi(
         workflow_id=workflow.id,

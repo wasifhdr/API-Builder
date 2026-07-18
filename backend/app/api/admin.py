@@ -43,6 +43,7 @@ from app.schemas.admin import (
     AdminUserDetailOut,
     AdminUserOut,
     AdminUserUpdate,
+    AdminWorkflowDetailOut,
     AdminWorkflowOut,
     CashoutPayRequest,
     CashoutRejectRequest,
@@ -834,6 +835,18 @@ async def list_user_workflows(user_id: uuid.UUID, db: AsyncSession = Depends(get
         select(Workflow).where(Workflow.user_id == user_id).order_by(Workflow.created_at.desc())
     )
     return list(result.scalars().all())
+
+
+@router.get("/workflows/{workflow_id}", response_model=AdminWorkflowDetailOut)
+async def get_admin_workflow(
+    workflow_id: uuid.UUID,
+    admin: User = Depends(require_super_admin),
+    db: AsyncSession = Depends(get_db),
+) -> Workflow:
+    workflow = await db.get(Workflow, workflow_id)
+    if workflow is None:
+        raise HTTPException(status_code=404, detail="workflow not found")
+    return workflow
 
 
 @router.delete("/workflows/{workflow_id}")

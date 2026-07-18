@@ -32,6 +32,8 @@ class WorkflowOut(BaseModel):
     sample_output: Any | None
     created_at: datetime
     updated_at: datetime
+    published_api_id: uuid.UUID | None = None
+    published_api_slug: str | None = None
 
 
 class WorkflowUpdate(BaseModel):

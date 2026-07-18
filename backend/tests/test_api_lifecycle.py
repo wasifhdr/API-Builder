@@ -1,0 +1,201 @@
+import uuid
+
+import pytest
+from fastapi import HTTPException
+
+from app.api import apis as apis_api
+from app.api import workflows as workflows_api
+from app.models.api import CustomApi, SpecStatus
+from app.models.execution import ApiExecution, ExecutionStatus
+from app.models.user import User, UserRole
+from app.models.workflow import Workflow, WorkflowStatus
+from app.services import publish as publish_module
+
+
+async def _make_workflow(db, owner, *, status=WorkflowStatus.READY, steps=None):
+    workflow = Workflow(
+        user_id=owner.id,
+        name="Book scraper",
+        start_url="https://example.com",
+        status=status,
+        steps=steps if steps is not None else [{"i": 0, "type": "goto", "url": "https://example.com"}],
+        parameters=[{"name": "q", "type": "string", "required": True}],
+        extraction={"main": {"mode": "single", "fields": [{"name": "title", "selector": "h1", "take": "text"}]}},
+        output_schema={"type": "object"},
+    )
+    db.add(workflow)
+    await db.commit()
+    await db.refresh(workflow)
+    return workflow
+
+
+async def _make_api(db, owner, workflow, *, snapshot=None):
+    api = CustomApi(
+        workflow_id=workflow.id,
+        owner_id=owner.id,
+        slug=f"api-{workflow.id.hex[:8]}",
+        name=workflow.name,
+        workflow_snapshot=snapshot if snapshot is not None else {"steps": [], "parameters": [], "extraction": {}},
+        spec_status=SpecStatus.READY,
+    )
+    db.add(api)
+    await db.commit()
+    await db.refresh(api)
+    return api
+
+
+async def test_build_snapshot_copies_workflow_fields(db, make_user):
+    owner = await make_user()
+    workflow = await _make_workflow(db, owner)
+
+    snapshot = publish_module.build_snapshot(workflow)
+
+    assert snapshot["steps"] == workflow.steps
+    assert snapshot["parameters"] == workflow.parameters
+    assert snapshot["extraction"] == workflow.extraction
+    assert snapshot["output_schema"] == workflow.output_schema
+    assert "browser_settings" in snapshot
+
+
+async def test_sync_workflow_to_api_updates_snapshot_and_marks_spec_pending(db, make_user, redis, monkeypatch):
+    monkeypatch.setattr(publish_module, "redis_client", redis)
+    owner = await make_user()
+    workflow = await _make_workflow(db, owner)
+    api = await _make_api(db, owner, workflow, snapshot={"steps": [], "parameters": [], "extraction": {}})
+
+    await publish_module.sync_workflow_to_api(api, workflow, db)
+
+    refreshed = await db.get(CustomApi, api.id)
+    assert refreshed.workflow_snapshot["parameters"] == workflow.parameters
+    assert refreshed.workflow_snapshot["extraction"] == workflow.extraction
+    assert refreshed.spec_status == SpecStatus.PENDING
+    jobs = await redis.xrange("jobs:llm")
+    assert len(jobs) == 1
+
+
+async def test_sync_endpoint_owner_updates_live_snapshot(db, make_user, redis, monkeypatch):
+    monkeypatch.setattr(publish_module, "redis_client", redis)
+    owner = await make_user()
+    workflow = await _make_workflow(db, owner)
+    api = await _make_api(db, owner, workflow, snapshot={"steps": [], "parameters": [], "extraction": {}})
+
+    result = await apis_api.sync_api(api_id=api.id, user=owner, db=db)
+
+    assert result.workflow_snapshot["parameters"] == workflow.parameters
+    assert result.spec_status == SpecStatus.PENDING
+
+
+async def test_sync_endpoint_requires_ready_workflow(db, make_user, redis, monkeypatch):
+    monkeypatch.setattr(publish_module, "redis_client", redis)
+    owner = await make_user()
+    workflow = await _make_workflow(db, owner, status=WorkflowStatus.DRAFT)
+    api = await _make_api(db, owner, workflow)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await apis_api.sync_api(api_id=api.id, user=owner, db=db)
+    assert exc_info.value.status_code == 400
+
+
+async def test_sync_endpoint_non_owner_gets_404(db, make_user, redis, monkeypatch):
+    monkeypatch.setattr(publish_module, "redis_client", redis)
+    owner = await make_user()
+    other = await make_user()
+    workflow = await _make_workflow(db, owner)
+    api = await _make_api(db, owner, workflow)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await apis_api.sync_api(api_id=api.id, user=other, db=db)
+    assert exc_info.value.status_code == 404
+
+
+async def test_delete_api_owner_removes_api_and_workflow_and_executions(db, make_user):
+    owner = await make_user()
+    workflow = await _make_workflow(db, owner)
+    api = await _make_api(db, owner, workflow)
+    execution = ApiExecution(api_id=api.id, status=ExecutionStatus.SUCCEEDED)
+    db.add(execution)
+    await db.commit()
+    await db.refresh(execution)
+    api_id, wf_id, exec_id = api.id, workflow.id, execution.id
+
+    await apis_api.delete_api(api_id=api_id, user=owner, db=db)
+    db.expunge_all()
+
+    assert await db.get(CustomApi, api_id) is None
+    assert await db.get(Workflow, wf_id) is None
+    assert await db.get(ApiExecution, exec_id) is None
+
+
+async def test_delete_api_non_owner_gets_404(db, make_user):
+    owner = await make_user()
+    other = await make_user()
+    workflow = await _make_workflow(db, owner)
+    api = await _make_api(db, owner, workflow)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await apis_api.delete_api(api_id=api.id, user=other, db=db)
+    assert exc_info.value.status_code == 404
+    assert await db.get(CustomApi, api.id) is not None
+
+
+async def test_get_workflow_reports_published_api(db, make_user):
+    owner = await make_user()
+    workflow = await _make_workflow(db, owner)
+    api = await _make_api(db, owner, workflow)
+
+    out = await workflows_api.get_workflow(workflow_id=workflow.id, user=owner, db=db)
+    assert out.published_api_id == api.id
+    assert out.published_api_slug == api.slug
+
+
+async def test_get_workflow_unpublished_has_null_published_fields(db, make_user):
+    owner = await make_user()
+    workflow = await _make_workflow(db, owner)
+
+    out = await workflows_api.get_workflow(workflow_id=workflow.id, user=owner, db=db)
+    assert out.published_api_id is None
+    assert out.published_api_slug is None
+
+
+import json as _json
+
+
+async def test_rerecord_flips_status_and_enqueues_job(db, make_user, redis, monkeypatch):
+    monkeypatch.setattr(workflows_api, "redis_client", redis)
+    owner = await make_user()
+    workflow = await _make_workflow(db, owner, status=WorkflowStatus.READY)
+    api = await _make_api(db, owner, workflow)
+
+    await workflows_api.rerecord(workflow_id=workflow.id, user=owner, db=db)
+
+    refreshed = await db.get(Workflow, workflow.id)
+    assert refreshed.status == WorkflowStatus.RECORDING
+
+    jobs = await redis.xrange("jobs:rec")
+    assert len(jobs) == 1
+    payload = _json.loads(jobs[0][1]["payload"])
+    assert payload["workflow_id"] == str(workflow.id)
+    assert payload["user_id"] == str(owner.id)
+    assert payload["rerecord"] is True
+    assert api  # keep the published API alive during re-record
+
+
+async def test_rerecord_blocks_when_already_recording(db, make_user, redis, monkeypatch):
+    monkeypatch.setattr(workflows_api, "redis_client", redis)
+    owner = await make_user()
+    workflow = await _make_workflow(db, owner, status=WorkflowStatus.RECORDING)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await workflows_api.rerecord(workflow_id=workflow.id, user=owner, db=db)
+    assert exc_info.value.status_code == 409
+
+
+async def test_rerecord_non_owner_gets_404(db, make_user, redis, monkeypatch):
+    monkeypatch.setattr(workflows_api, "redis_client", redis)
+    owner = await make_user()
+    other = await make_user()
+    workflow = await _make_workflow(db, owner)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await workflows_api.rerecord(workflow_id=workflow.id, user=other, db=db)
+    assert exc_info.value.status_code == 404

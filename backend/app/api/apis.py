@@ -6,7 +6,7 @@ from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import ValidationError
-from sqlalchemy import case, func, select
+from sqlalchemy import case, delete, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -16,6 +16,7 @@ from app.db import get_db
 from app.models.api import ApiAccessGrant, ApiAllowedEmail, ApiInvite, ApiPricingMode, ApiVisibility, CustomApi, SpecStatus
 from app.models.execution import ApiExecution, ExecutionStatus
 from app.models.user import User, UserRole
+from app.models.workflow import Workflow, WorkflowStatus
 from app.redis import redis_client
 from app.schemas.api import (
     ApiExecutionOut,
@@ -29,6 +30,7 @@ from app.schemas.api import (
 from app.schemas.invite import AddAllowedEmailRequest, AllowedEmailOut, CreateInviteRequest, GrantOut, InviteOut
 from app.services.grants import has_access
 from app.services.plans import plan_for
+from app.services.publish import sync_workflow_to_api
 
 router = APIRouter(prefix="/apis", tags=["apis"])
 
@@ -151,6 +153,41 @@ async def regenerate_spec(
     await db.refresh(api)
     await redis_client.xadd("jobs:llm", {"payload": json.dumps({"api_id": str(api.id)})})
     return api
+
+
+@router.post("/{api_id}/sync", response_model=CustomApiOut)
+async def sync_api(
+    api_id: uuid.UUID,
+    user: User = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+) -> CustomApi:
+    api = await _get_owned_api(api_id, user, db)
+    workflow = await db.get(Workflow, api.workflow_id)
+    if workflow is None or workflow.status != WorkflowStatus.READY:
+        raise HTTPException(
+            status_code=400,
+            detail="the recording must be ready (needs extraction) before syncing to the live API",
+        )
+    await sync_workflow_to_api(api, workflow, db)
+    return api
+
+
+@router.delete("/{api_id}", status_code=204)
+async def delete_api(
+    api_id: uuid.UUID,
+    user: User = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    api = await _get_owned_api(api_id, user, db)
+    # Deleting the workflow cascades to this API (custom_apis.workflow_id is
+    # ON DELETE CASCADE) and, transitively, its executions/grants/invites —
+    # the same mechanism as admin.delete_admin_workflow. "Delete" means gone.
+    workflow_id = api.workflow_id
+    if workflow_id is not None:
+        await db.execute(delete(Workflow).where(Workflow.id == workflow_id))
+    else:
+        await db.execute(delete(CustomApi).where(CustomApi.id == api_id))
+    await db.commit()
 
 
 @router.get("/{api_id}/executions", response_model=list[ApiExecutionOut])

@@ -76,7 +76,9 @@ def _truncate_for_storage(data: object) -> tuple[object, bool]:
 
 
 async def record_session(payload: dict) -> None:
-    await RecordingSession(payload["workflow_id"], payload["user_id"]).run()
+    await RecordingSession(
+        payload["workflow_id"], payload["user_id"], rerecord=payload.get("rerecord", False)
+    ).run()
 
 
 async def execute_api(payload: dict) -> None:

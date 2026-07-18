@@ -429,3 +429,26 @@ async def test_stats_revenue_and_pending_payments(db, make_user):
     stats = await admin_api.get_admin_stats(db=db)
     assert stats.revenue_verified_bdt == Decimal("350.00")
     assert stats.pending_payments == 2
+
+
+async def test_admin_get_workflow_detail_returns_steps(db, make_user):
+    admin = await _make_super_admin(db)
+    owner = await make_user()
+    workflow = await _make_workflow(db, owner)
+    workflow.steps = [{"i": 0, "type": "goto", "url": "https://example.com"}]
+    workflow.parameters = [{"name": "q", "type": "string"}]
+    workflow.extraction = {"main": {"mode": "single", "fields": []}}
+    await db.commit()
+
+    out = await admin_api.get_admin_workflow(workflow_id=workflow.id, admin=admin, db=db)
+    assert out.id == workflow.id
+    assert out.steps[0]["type"] == "goto"
+    assert out.parameters[0]["name"] == "q"
+    assert out.extraction["main"]["mode"] == "single"
+
+
+async def test_admin_get_workflow_detail_missing_404(db):
+    admin = await _make_super_admin(db)
+    with pytest.raises(HTTPException) as exc_info:
+        await admin_api.get_admin_workflow(workflow_id=uuid.uuid4(), admin=admin, db=db)
+    assert exc_info.value.status_code == 404

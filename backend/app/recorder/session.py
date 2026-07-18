@@ -33,9 +33,10 @@ VALID_PARAM_TYPES = {"string", "integer", "number", "boolean"}
 
 
 class RecordingSession:
-    def __init__(self, workflow_id: str, user_id: str):
+    def __init__(self, workflow_id: str, user_id: str, rerecord: bool = False):
         self.workflow_id = uuid.UUID(workflow_id)
         self.user_id = uuid.UUID(user_id)
+        self.rerecord = rerecord
         self.redis = redis_client
         self.steps: list[dict] = []
         self.parameters: list[dict] = []
@@ -442,7 +443,17 @@ class RecordingSession:
             if workflow is None:
                 return
             if self._cancelled:
-                workflow.status = WorkflowStatus.ARCHIVED
+                # A cancelled/timed-out re-record must not archive a workflow
+                # that already backs a live API, but its status must still
+                # reflect whether it actually has extraction (the cancelled
+                # session did not overwrite it) — a rootless/empty re-record
+                # can't masquerade as READY and get synced live. A cancelled
+                # *fresh* recording is a throwaway draft, so it still archives.
+                workflow.status = (
+                    (WorkflowStatus.READY if workflow.extraction.get("main") else WorkflowStatus.DRAFT)
+                    if self.rerecord
+                    else WorkflowStatus.ARCHIVED
+                )
             else:
                 if self._save_requested and self._save_requested.get("name"):
                     workflow.name = self._save_requested["name"]

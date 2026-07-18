@@ -87,6 +87,8 @@ export default function ApiDetail() {
   const [stats, setStats] = useState<ApiStats | null>(null)
   const [statsError, setStatsError] = useState<string | null>(null)
   const [statsLoading, setStatsLoading] = useState(true)
+  const [confirmingDelete, setConfirmingDelete] = useState(false)
+  const [deleting, setDeleting] = useState(false)
 
   const isOwner = !!user && !!customApi && customApi.owner_id === user.id
 
@@ -234,6 +236,19 @@ export default function ApiDetail() {
     }
   }
 
+  async function handleDeleteApi() {
+    setDeleting(true)
+    setError(null)
+    try {
+      await api.delete(`/apis/${apiId}`)
+      window.location.assign('/dashboard')
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Failed to delete API')
+      setDeleting(false)
+      setConfirmingDelete(false)
+    }
+  }
+
   if (!customApi) {
     return (
       <AppShell>
@@ -284,6 +299,29 @@ export default function ApiDetail() {
           </Button>
         )}
       </div>
+
+      {isOwner && (
+        <div className="mb-8 flex flex-wrap items-center gap-3">
+          <Link to={`/workflows/${customApi.workflow_id}/edit`} className={buttonClasses('default', 'sm')}>
+            Edit recording
+          </Link>
+          {confirmingDelete ? (
+            <>
+              <span className="text-sm text-ink/70">Delete this API and its recording? This can&apos;t be undone.</span>
+              <Button variant="danger-ghost" size="sm" onClick={handleDeleteApi} disabled={deleting}>
+                {deleting ? 'Deleting…' : 'Confirm delete'}
+              </Button>
+              <Button variant="ghost" size="sm" onClick={() => setConfirmingDelete(false)} disabled={deleting}>
+                Cancel
+              </Button>
+            </>
+          ) : (
+            <Button variant="danger-ghost" size="sm" onClick={() => setConfirmingDelete(true)}>
+              Delete API
+            </Button>
+          )}
+        </div>
+      )}
 
       <section className="mb-8 space-y-4">
         <TryItPanel apiId={customApi.id} slug={customApi.slug} isOwner={isOwner} />
