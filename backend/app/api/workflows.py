@@ -1,3 +1,4 @@
+import json
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -9,6 +10,7 @@ from app.db import get_db
 from app.models.api import CustomApi
 from app.models.user import User
 from app.models.workflow import Workflow, WorkflowStatus
+from app.redis import redis_client
 from app.schemas.api import CustomApiOut
 from app.schemas.workflow import WorkflowListItem, WorkflowOut, WorkflowUpdate
 from app.services.publish import publish_workflow
@@ -110,3 +112,27 @@ async def publish(
     if workflow.status != WorkflowStatus.READY:
         raise HTTPException(status_code=400, detail="workflow must be ready (needs extraction) to publish")
     return await publish_workflow(workflow, db)
+
+
+@router.post("/{workflow_id}/rerecord", status_code=202)
+async def rerecord(
+    workflow_id: uuid.UUID,
+    user: User = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    workflow = await _get_owned_workflow(workflow_id, user, db)
+    if workflow.status == WorkflowStatus.RECORDING:
+        raise HTTPException(status_code=409, detail="this recording is already in progress")
+    # Re-recording an existing API is not a new creation — no quota is consumed.
+    # The live API keeps serving its snapshot until the owner syncs afterward.
+    workflow.status = WorkflowStatus.RECORDING
+    await db.commit()
+    await redis_client.xadd(
+        "jobs:rec",
+        {"payload": json.dumps({
+            "workflow_id": str(workflow.id),
+            "user_id": str(user.id),
+            "rerecord": True,
+        })},
+    )
+    return {"ok": True}

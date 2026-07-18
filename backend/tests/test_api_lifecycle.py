@@ -155,3 +155,47 @@ async def test_get_workflow_unpublished_has_null_published_fields(db, make_user)
     out = await workflows_api.get_workflow(workflow_id=workflow.id, user=owner, db=db)
     assert out.published_api_id is None
     assert out.published_api_slug is None
+
+
+import json as _json
+
+
+async def test_rerecord_flips_status_and_enqueues_job(db, make_user, redis, monkeypatch):
+    monkeypatch.setattr(workflows_api, "redis_client", redis)
+    owner = await make_user()
+    workflow = await _make_workflow(db, owner, status=WorkflowStatus.READY)
+    api = await _make_api(db, owner, workflow)
+
+    await workflows_api.rerecord(workflow_id=workflow.id, user=owner, db=db)
+
+    refreshed = await db.get(Workflow, workflow.id)
+    assert refreshed.status == WorkflowStatus.RECORDING
+
+    jobs = await redis.xrange("jobs:rec")
+    assert len(jobs) == 1
+    payload = _json.loads(jobs[0][1]["payload"])
+    assert payload["workflow_id"] == str(workflow.id)
+    assert payload["user_id"] == str(owner.id)
+    assert payload["rerecord"] is True
+    assert api  # keep the published API alive during re-record
+
+
+async def test_rerecord_blocks_when_already_recording(db, make_user, redis, monkeypatch):
+    monkeypatch.setattr(workflows_api, "redis_client", redis)
+    owner = await make_user()
+    workflow = await _make_workflow(db, owner, status=WorkflowStatus.RECORDING)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await workflows_api.rerecord(workflow_id=workflow.id, user=owner, db=db)
+    assert exc_info.value.status_code == 409
+
+
+async def test_rerecord_non_owner_gets_404(db, make_user, redis, monkeypatch):
+    monkeypatch.setattr(workflows_api, "redis_client", redis)
+    owner = await make_user()
+    other = await make_user()
+    workflow = await _make_workflow(db, owner)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await workflows_api.rerecord(workflow_id=workflow.id, user=other, db=db)
+    assert exc_info.value.status_code == 404
