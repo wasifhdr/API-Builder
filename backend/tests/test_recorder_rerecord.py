@@ -18,7 +18,7 @@ async def _finalize_uses_test_db(engine, monkeypatch):
     monkeypatch.setattr(recorder_session, "async_session", async_sessionmaker(engine, expire_on_commit=False))
 
 
-async def _seed(db, make_user):
+async def _seed(db, make_user, extraction=None):
     owner = await make_user()
     workflow = Workflow(
         user_id=owner.id,
@@ -27,7 +27,7 @@ async def _seed(db, make_user):
         status=WorkflowStatus.RECORDING,  # rerecord endpoint already flipped it
         steps=[{"i": 0, "type": "goto", "url": "https://example.com"}],
         parameters=[],
-        extraction={"main": {"mode": "single", "fields": []}},
+        extraction=extraction if extraction is not None else {"main": {"mode": "single", "fields": []}},
     )
     db.add(workflow)
     await db.commit()
@@ -62,6 +62,24 @@ async def test_cancelled_rerecord_restores_ready_not_archived(db, make_user):
     db.expire_all()
     refreshed = await db.get(Workflow, workflow_id)
     assert refreshed.status == WorkflowStatus.READY
+
+
+async def test_cancelled_rerecord_with_empty_extraction_goes_draft_not_ready(db, make_user):
+    # A second re-record cancelled/timed out on a workflow whose persisted
+    # extraction is empty (e.g. an earlier re-record never set it) must not
+    # be force-set to READY — that would let the owner Sync an extraction-less
+    # snapshot over the LIVE API. Status must derive from the real extraction.
+    owner, workflow = await _seed(db, make_user, extraction={})
+    workflow_id, owner_id = workflow.id, owner.id  # read before expire_all below
+
+    session = RecordingSession(str(workflow_id), str(owner_id), rerecord=True)
+    session._cancelled = True
+    session._publish = _noop_publish
+    await session._finalize()
+
+    db.expire_all()
+    refreshed = await db.get(Workflow, workflow_id)
+    assert refreshed.status == WorkflowStatus.DRAFT
 
 
 async def test_cancelled_fresh_recording_still_archives(db, make_user):
