@@ -429,6 +429,15 @@ export interface AdminWorkflow {
   created_at: string
 }
 
+export interface AdminWorkflowDetail {
+  id: string
+  name: string
+  status: string
+  steps: Step[]
+  parameters: Parameter[]
+  extraction: { main?: ExtractionConfig }
+}
+
 export interface AdminStatsDay {
   date: string
   total: number

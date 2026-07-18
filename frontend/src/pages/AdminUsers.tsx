@@ -8,6 +8,7 @@ import {
   Button,
   buttonClasses,
   CapsLabel,
+  cardClasses,
   EmptyRow,
   FieldError,
   FieldLabel,
@@ -23,7 +24,16 @@ import {
 } from '../components/ui'
 import { useSession } from '../hooks/useSession'
 import { ApiError, api } from '../lib/api'
-import type { AdminKey, AdminUser, AdminUserUpdate, AdminWorkflow, PlanTier, UserRole } from '../lib/types'
+import { describeStep } from '../lib/steps'
+import type {
+  AdminKey,
+  AdminUser,
+  AdminUserUpdate,
+  AdminWorkflow,
+  AdminWorkflowDetail,
+  PlanTier,
+  UserRole,
+} from '../lib/types'
 
 const WORKFLOW_BADGE: Record<AdminWorkflow['status'], BadgeVariant> = {
   recording: 'info',
@@ -69,6 +79,7 @@ function UserRow({ user, isSelf, expanded, onToggle, onChanged }: RowProps) {
 
   const [workflows, setWorkflows] = useState<AdminWorkflow[]>([])
   const [workflowsError, setWorkflowsError] = useState<string | null>(null)
+  const [viewing, setViewing] = useState<AdminWorkflowDetail | null>(null)
 
   const suspended = user.suspended_at !== null
 
@@ -107,6 +118,16 @@ function UserRow({ user, isSelf, expanded, onToggle, onChanged }: RowProps) {
       onChanged()
     } catch (err) {
       setWorkflowsError(errMessage(err, 'Failed to delete workflow'))
+    }
+  }
+
+  async function viewWorkflow(workflowId: string) {
+    setWorkflowsError(null)
+    try {
+      const detail = await api.get<AdminWorkflowDetail>(`/admin/workflows/${workflowId}`)
+      setViewing(detail)
+    } catch (err) {
+      setWorkflowsError(errMessage(err, 'Failed to load workflow'))
     }
   }
 
@@ -382,7 +403,10 @@ function UserRow({ user, isSelf, expanded, onToggle, onChanged }: RowProps) {
                             <Badge variant={WORKFLOW_BADGE[w.status]}>{w.status}</Badge>
                           </Td>
                           <Td>
-                            <div className="flex justify-end">
+                            <div className="flex justify-end gap-1">
+                              <Button size="sm" variant="ghost" onClick={() => viewWorkflow(w.id)}>
+                                View
+                              </Button>
                               <Button size="sm" variant="danger-ghost" onClick={() => deleteWorkflow(w.id)}>
                                 Delete
                               </Button>
@@ -393,6 +417,51 @@ function UserRow({ user, isSelf, expanded, onToggle, onChanged }: RowProps) {
                     </tbody>
                   </Table>
                 </TableWrapper>
+
+                {viewing && (
+                  <section className={`${cardClasses({ variant: 'quiet' })} mt-6 space-y-4`}>
+                    <div className="flex items-center justify-between">
+                      <h3 className="text-h2">{viewing.name} — steps (read-only)</h3>
+                      <Button variant="ghost" size="sm" onClick={() => setViewing(null)}>
+                        Close
+                      </Button>
+                    </div>
+                    <TableWrapper>
+                      <Table>
+                        <thead>
+                          <tr>
+                            <Th className="w-14">#</Th>
+                            <Th>Step</Th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {viewing.steps.map((s) => (
+                            <Tr key={s.i}>
+                              <Td mono>{s.i}</Td>
+                              <Td>{describeStep(s)}</Td>
+                            </Tr>
+                          ))}
+                        </tbody>
+                      </Table>
+                    </TableWrapper>
+                    <div>
+                      <CapsLabel tone="muted" className="mb-1">
+                        Parameters
+                      </CapsLabel>
+                      <p className="text-sm text-ink/70">
+                        {viewing.parameters.map((p) => p.name).join(', ') || 'None'}
+                      </p>
+                    </div>
+                    <div>
+                      <CapsLabel tone="muted" className="mb-1">
+                        Extraction
+                      </CapsLabel>
+                      <pre className="overflow-x-auto rounded-dot bg-cream p-3 text-xs">
+                        {JSON.stringify(viewing.extraction, null, 2)}
+                      </pre>
+                    </div>
+                  </section>
+                )}
               </div>
             </div>
           </td>
