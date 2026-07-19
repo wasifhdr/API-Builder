@@ -1,45 +1,107 @@
-import { useEffect } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import AppShell from '../components/AppShell'
-import { buttonClasses, CapsLabel } from '../components/ui'
+import ApiDocView, { type OpenApiSpec } from '../components/ApiDocView'
+import { buttonClasses, EmptyState, Spinner } from '../components/ui'
 
-const SCALAR_SCRIPT_ID = 'scalar-cdn-script'
+type SpecStatus = 'pending' | 'generating' | 'ready' | 'failed'
+
+interface DocResponse {
+  name: string
+  slug: string
+  status: SpecStatus
+  spec: OpenApiSpec | null
+}
+
+const POLL_MS = 2500
+const MAX_POLLS = 80 // ~3.3 min ceiling; generation settles well before this
 
 export default function ApiDocs() {
   const { slug } = useParams<{ slug: string }>()
+  const [doc, setDoc] = useState<DocResponse | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const mounted = useRef(true)
+
+  const fetchDoc = useCallback(async (): Promise<DocResponse> => {
+    const res = await fetch(`/v1/apis/${slug}/doc`, { credentials: 'same-origin' })
+    if (!res.ok) {
+      const message =
+        res.status === 403
+          ? 'You do not have access to these docs.'
+          : res.status === 401
+            ? 'Please sign in to view these docs.'
+            : 'These docs could not be found.'
+      throw new Error(message)
+    }
+    return (await res.json()) as DocResponse
+  }, [slug])
 
   useEffect(() => {
-    const container = document.getElementById('api-reference')
-    if (container) {
-      container.setAttribute('data-url', `/v1/apis/${slug}/openapi.json`)
+    mounted.current = true
+    let attempts = 0
+    const load = async () => {
+      try {
+        const d = await fetchDoc()
+        if (!mounted.current) return
+        setDoc(d)
+        setError(null)
+        if ((d.status === 'pending' || d.status === 'generating') && attempts < MAX_POLLS) {
+          attempts++
+          window.setTimeout(load, POLL_MS)
+        }
+      } catch (e) {
+        if (!mounted.current) return
+        setError(e instanceof Error ? e.message : 'Failed to load docs')
+      }
     }
+    load()
+    return () => {
+      mounted.current = false
+    }
+  }, [fetchDoc])
 
-    // Scalar reads data-url once at script-load time. Loaded once per app
-    // session; navigating between two different docs pages in the same SPA
-    // session may need a manual refresh to pick up the new slug — an
-    // accepted trade-off of the lightweight CDN-embed approach (no heavy
-    // React wrapper, per BLUEPRINT.md §12).
-    if (!document.getElementById(SCALAR_SCRIPT_ID)) {
-      const script = document.createElement('script')
-      script.id = SCALAR_SCRIPT_ID
-      script.src = 'https://cdn.jsdelivr.net/npm/@scalar/api-reference'
-      document.body.appendChild(script)
-    }
-  }, [slug])
+  const generating = doc && (doc.status === 'pending' || doc.status === 'generating')
 
   return (
     <AppShell>
       <Link to="/dashboard" className={buttonClasses('ghost', 'sm', 'mb-4')}>
         &larr; Dashboard
       </Link>
-      <div className="mb-6">
-        <CapsLabel>API Reference</CapsLabel>
-        <h1 className="font-display text-display-sm">{slug}</h1>
-      </div>
-      {/* Scalar's embedded reference UI manages its own (dark) theme internally. */}
-      <div className="-mx-6 -mb-8 overflow-hidden rounded-t-card border-2 border-ink">
-        <div id="api-reference" data-url={`/v1/apis/${slug}/openapi.json`} />
-      </div>
+
+      {error && (
+        <EmptyState statement={<>Couldn&apos;t load docs.</>} description={error} />
+      )}
+
+      {!error && !doc && (
+        <div className="flex items-center gap-3 py-16 text-ink/70">
+          <Spinner className="size-5" /> Loading…
+        </div>
+      )}
+
+      {!error && generating && (
+        <div className="flex flex-col items-center justify-center gap-4 py-24 text-center">
+          <Spinner className="size-8" />
+          <div>
+            <p className="font-display text-h2">Generating Docs</p>
+            <p className="mt-1 text-sm text-ink/60">
+              The AI is writing the documentation — this usually takes a few seconds.
+            </p>
+          </div>
+        </div>
+      )}
+
+      {!error && doc && !generating && doc.spec && <ApiDocView spec={doc.spec} slug={doc.slug} />}
+
+      {!error && doc && !generating && !doc.spec && (
+        <EmptyState
+          statement={
+            <>
+              Docs generation <span className="text-orange">failed.</span>
+            </>
+          }
+          description="Open the API and click Regenerate docs to try again."
+        />
+      )}
     </AppShell>
   )
 }

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import AppShell from '../components/AppShell'
 import TryItPanel from '../components/TryItPanel'
@@ -17,6 +17,7 @@ import {
   Input,
   PageHeader,
   Radio,
+  Spinner,
   StatChip,
   Table,
   TableWrapper,
@@ -89,8 +90,54 @@ export default function ApiDetail() {
   const [statsLoading, setStatsLoading] = useState(true)
   const [confirmingDelete, setConfirmingDelete] = useState(false)
   const [deleting, setDeleting] = useState(false)
+  const [docsMessage, setDocsMessage] = useState<string | null>(null)
 
   const isOwner = !!user && !!customApi && customApi.owner_id === user.id
+  const specBusy = customApi?.spec_status === 'pending' || customApi?.spec_status === 'generating'
+
+  const mountedRef = useRef(true)
+  const pollingRef = useRef(false)
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+    }
+  }, [])
+
+  // Spec generation runs in the worker (~seconds). Poll /apis/{id} until it
+  // settles so the badge and docs status advance live — after both a manual
+  // "Regenerate docs" and the automatic generation that fires on publish —
+  // without the user having to reload. Guarded so only one loop runs at a time.
+  const pollSpec = useCallback(() => {
+    if (pollingRef.current) return
+    pollingRef.current = true
+    let attempts = 0
+    const tick = async () => {
+      try {
+        const fresh = await api.get<CustomApi>(`/apis/${apiId}`)
+        if (!mountedRef.current) {
+          pollingRef.current = false
+          return
+        }
+        setCustomApi(fresh)
+        if ((fresh.spec_status === 'pending' || fresh.spec_status === 'generating') && attempts < 80) {
+          attempts++
+          window.setTimeout(tick, 2500)
+        } else {
+          pollingRef.current = false
+          if (fresh.spec_status === 'ready') setDocsMessage('Docs updated.')
+        }
+      } catch {
+        if (mountedRef.current && attempts < 80) {
+          attempts++
+          window.setTimeout(tick, 2500)
+        } else {
+          pollingRef.current = false
+        }
+      }
+    }
+    window.setTimeout(tick, 2500)
+  }, [apiId])
 
   function load() {
     api
@@ -122,6 +169,14 @@ export default function ApiDetail() {
 
   useEffect(load, [apiId])
   useEffect(loadStats, [apiId])
+
+  // Poll while the spec is mid-generation — on load, right after publish, or
+  // after Regenerate — so the badge and docs status advance live without a
+  // reload. pollSpec self-schedules and is guarded against overlapping loops,
+  // so re-running this effect is safe.
+  useEffect(() => {
+    if (specBusy) pollSpec()
+  }, [specBusy, pollSpec])
 
   async function toggleActive() {
     if (!customApi) return
@@ -228,6 +283,7 @@ export default function ApiDetail() {
   }
 
   async function regenerateSpec() {
+    setDocsMessage(null)
     try {
       const updated = await api.post<CustomApi>(`/apis/${apiId}/regenerate-spec`)
       setCustomApi(updated)
@@ -294,9 +350,17 @@ export default function ApiDetail() {
           View docs
         </Link>
         {isOwner && (
-          <Button variant="ghost" size="sm" onClick={regenerateSpec}>
-            Regenerate docs
+          <Button variant="ghost" size="sm" onClick={regenerateSpec} disabled={specBusy}>
+            {specBusy ? 'Generating…' : 'Regenerate docs'}
           </Button>
+        )}
+        {isOwner && specBusy && (
+          <span className="flex items-center gap-2 text-sm text-ink/60">
+            <Spinner className="size-4" /> writing docs…
+          </span>
+        )}
+        {isOwner && !specBusy && docsMessage && (
+          <span className="text-sm font-medium text-green-deep">{docsMessage}</span>
         )}
       </div>
 

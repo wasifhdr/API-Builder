@@ -9,6 +9,7 @@ from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.core.deps import SESSION_COOKIE, get_effective_tier
@@ -278,6 +279,31 @@ async def _session_user_id(request: Request) -> uuid.UUID | None:
     return uuid.UUID(user_id_str) if user_id_str else None
 
 
+async def _authorized_api_by_slug(
+    slug: str, request: Request, x_api_key: str | None, db: AsyncSession
+) -> CustomApi:
+    """Resolves a slug to an API the current viewer may see. Docs pages are
+    browsed from a session (owner or a grantee, viewing ApiDocs); an API key is
+    also accepted so programmatic clients can fetch the spec. 404/401/403 behave
+    exactly like /run."""
+    result = await db.execute(select(CustomApi).where(CustomApi.slug == slug))
+    api = result.scalar_one_or_none()
+    if api is None:
+        raise HTTPException(status_code=404, detail="api not found")
+
+    if x_api_key:
+        key = await _authenticate_key(x_api_key)
+        candidate_user_id = key.user_id
+    else:
+        candidate_user_id = await _session_user_id(request)
+        if candidate_user_id is None:
+            raise HTTPException(status_code=401, detail="unauthorized")
+
+    if not await has_access(api, candidate_user_id, db):
+        raise HTTPException(status_code=403, detail="no access to this api")
+    return api
+
+
 @public_app.get("/apis/{slug}/openapi.json")
 async def get_openapi_spec(
     slug: str,
@@ -285,24 +311,27 @@ async def get_openapi_spec(
     x_api_key: str | None = Header(default=None),
 ) -> JSONResponse:
     async with async_session() as db:
-        result = await db.execute(select(CustomApi).where(CustomApi.slug == slug))
-        api = result.scalar_one_or_none()
-        if api is None:
-            raise HTTPException(status_code=404, detail="api not found")
-
-        # Docs pages are browsed from a session (owner or a grantee, viewing
-        # ApiDocs) but /v1/run itself needs a real key — accept either here.
-        if x_api_key:
-            key = await _authenticate_key(x_api_key)
-            candidate_user_id = key.user_id
-        else:
-            candidate_user_id = await _session_user_id(request)
-            if candidate_user_id is None:
-                raise HTTPException(status_code=401, detail="unauthorized")
-
-        if not await has_access(api, candidate_user_id, db):
-            raise HTTPException(status_code=403, detail="no access to this api")
-
+        api = await _authorized_api_by_slug(slug, request, x_api_key, db)
         if api.openapi_spec is None:
             raise HTTPException(status_code=404, detail="spec not generated yet")
         return JSONResponse(api.openapi_spec)
+
+
+@public_app.get("/apis/{slug}/doc")
+async def get_api_doc(
+    slug: str,
+    request: Request,
+    x_api_key: str | None = Header(default=None),
+) -> JSONResponse:
+    """Status-aware doc payload for the ApiDocs page. Lets the UI show a
+    'Generating Docs' state while spec_status is pending/generating and render
+    the enriched spec once it is ready. `spec` is null until the first
+    generation completes; during a re-generation it holds the previous spec."""
+    async with async_session() as db:
+        api = await _authorized_api_by_slug(slug, request, x_api_key, db)
+        return JSONResponse({
+            "name": api.name,
+            "slug": api.slug,
+            "status": api.spec_status.value,
+            "spec": api.openapi_spec,
+        })
