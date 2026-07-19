@@ -81,6 +81,20 @@ def _extract_json(content: str) -> dict:
 
 
 async def complete_json(system: str, user: str, schema: dict, max_tokens: int = 2000) -> dict:
+    kwargs: dict = {}
+    if settings.llm_provider == "craftx":
+        # This gateway 502s on any response_format (json_object or json_schema),
+        # so we ask for JSON in the prompt and lean on _extract_json to strip
+        # the code fence / prose the model wraps it in.
+        user = (
+            f"{user}\n\nRespond with ONLY a JSON object matching this schema "
+            f"(no prose, no markdown fence):\n{json.dumps(schema)}"
+        )
+    else:
+        kwargs["response_format"] = {
+            "type": "json_schema",
+            "json_schema": {"name": "out", "schema": schema, "strict": True},
+        }
     resp = await client.chat.completions.create(
         model=MODEL_NAME,
         messages=[
@@ -89,9 +103,13 @@ async def complete_json(system: str, user: str, schema: dict, max_tokens: int = 
         ],
         temperature=0.2,
         max_tokens=max_tokens,
-        response_format={
-            "type": "json_schema",
-            "json_schema": {"name": "out", "schema": schema, "strict": True},
-        },
+        **kwargs,
     )
+    if not resp.choices:
+        # A WAF/gateway in front of the model can return a 200 with an error
+        # body (no choices) instead of a completion — e.g. Imunify360 bot
+        # protection. Surface its message instead of an opaque IndexError.
+        extra = resp.model_dump()
+        detail = extra.get("message") or extra.get("error") or "gateway returned no choices"
+        raise RuntimeError(f"LLM gateway error: {detail}")
     return _extract_json(resp.choices[0].message.content)

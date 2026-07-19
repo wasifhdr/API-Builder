@@ -25,7 +25,7 @@ class Settings(BaseSettings):
     plan_price_max_bdt: int = 500
     quota_tz: str = "Asia/Dhaka"
 
-    bkash_receive_msisdn: str = "01700000000"
+    bkash_receive_msisdn: str = "01701050922"
     sms_webhook_token: str = "changeme"
     payment_intent_ttl_hours: int = 24
 
@@ -37,6 +37,12 @@ class Settings(BaseSettings):
     exec_timeout_seconds: int = 90
     sync_wait_seconds: int = 55
     failures_dir: str = "./data/failures"
+    # Debug aids for replay: set REPLAY_HEADLESS=false to watch the Chromium
+    # window drive the workflow live, and REPLAY_SLOW_MO_MS to slow each action
+    # down so you can see which step drifts. Keep headless in normal operation
+    # (llama.cpp owns the VRAM; headful contends for the desktop).
+    replay_headless: bool = True
+    replay_slow_mo_ms: int = 0
 
     llama_base_url: str = "http://127.0.0.1:8080/v1"
     llm_enabled: bool = True

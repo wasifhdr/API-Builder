@@ -347,6 +347,7 @@ export interface AdminPlanUpdate {
 export interface UserSettings {
   use_saved_logins?: boolean
   recorder_channel?: 'chromium' | 'chrome'
+  replay_headless?: boolean
 }
 
 export interface User {

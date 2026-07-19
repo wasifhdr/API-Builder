@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Badge, Button, Checkbox, CodeBlock, FieldHelp, FieldLabel, Input, cardClasses } from './ui'
 import { ApiError, api } from '../lib/api'
+import { useSession } from '../hooks/useSession'
 import type { Parameter, RunAccepted, RunSuccess } from '../lib/types'
 
 const OWNER_KEY_SLOT = 'apibuilder.testerKey'
@@ -29,6 +30,24 @@ export default function TryItPanel({
   const [running, setRunning] = useState(false)
   const [result, setResult] = useState<RunSuccess | null>(null)
   const [status, setStatus] = useState<string | null>(null)
+  const { user, refetch } = useSession()
+  const [savingHeadless, setSavingHeadless] = useState(false)
+  // Effective default is headless (matches the config default); an unset
+  // preference means the browser window stays hidden.
+  const headless = user?.settings.replay_headless ?? true
+
+  async function setHeadless(value: boolean) {
+    setSavingHeadless(true)
+    setError(null)
+    try {
+      await api.patch('/me/settings', { replay_headless: value })
+      await refetch()
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Failed to update headless setting')
+    } finally {
+      setSavingHeadless(false)
+    }
+  }
 
   useEffect(() => {
     api
@@ -151,7 +170,22 @@ export default function TryItPanel({
   return (
     <section className={`${cardClasses({ variant: 'quiet' })} space-y-4`}>
       <div className="flex items-center justify-between">
-        <h2 className="text-h2">Try it</h2>
+        <div className="flex items-center gap-4">
+          <h2 className="text-h2">Try it</h2>
+          {isOwner && (
+            <label
+              className="flex items-center gap-2 text-sm text-ink/70"
+              title="On: replay runs hidden. Off: the Chromium window opens on the worker's desktop so you can watch the run — useful for debugging."
+            >
+              <Checkbox
+                checked={headless}
+                disabled={savingHeadless}
+                onChange={(e) => setHeadless(e.target.checked)}
+              />
+              Headless
+            </label>
+          )}
+        </div>
         <Badge variant="neutral">/v1/run/{slug}</Badge>
       </div>
 

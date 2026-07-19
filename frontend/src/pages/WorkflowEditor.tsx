@@ -279,6 +279,9 @@ export default function WorkflowEditor() {
           </>
         ) : (
           <>
+            <Button variant="default" onClick={handleRerecord} disabled={rerecording}>
+              {rerecording ? 'Starting…' : 'Re-record'}
+            </Button>
             {workflow.status === 'ready' && (
               <Button variant="ink" onClick={handlePublish} disabled={publishing}>
                 {publishing ? 'Publishing…' : 'Publish as API'}

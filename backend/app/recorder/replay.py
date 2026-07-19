@@ -5,6 +5,7 @@ from playwright.async_api import Page, async_playwright
 
 from app.config import settings
 from app.recorder.extraction import run_extraction
+from app.recorder.llm_extract import llm_fill_missing
 
 # Per-candidate wait budgets, tried in order until one selector matches —
 # absorbs the small selector drift that's common between recording and
@@ -77,18 +78,45 @@ async def _dump_failure_artifacts(page: Page, execution_id: uuid.UUID) -> str:
     return str(failures_dir)
 
 
+async def _wait_for_extraction_ready(page: Page, config: dict) -> None:
+    # SPA content (e.g. Canvas's React app) usually renders after
+    # domcontentloaded, so extracting immediately races an empty DOM and
+    # silently returns nothing. Wait for the target node to attach first.
+    # A genuinely-empty result just eats the timeout, then extracts [] anyway.
+    if config.get("mode") == "list":
+        selector = config.get("root")
+    else:
+        fields = config.get("fields") or []
+        selector = fields[0].get("selector") if fields else None
+    if not selector:
+        return
+    try:
+        await page.locator(selector).first.wait_for(state="attached", timeout=15_000)
+    except Exception:
+        pass
+
+
 async def replay_workflow(
     workflow_snapshot: dict,
     params: dict,
     storage_state: dict | None,
     execution_id: uuid.UUID,
+    headless: bool | None = None,
 ) -> dict[str, Any]:
     steps = workflow_snapshot.get("steps", [])
     extraction = workflow_snapshot.get("extraction", {})
     data: Any = None
 
+    # Per-run override (owner's UI toggle) wins; otherwise fall back to the
+    # process-level default from config/.env.
+    launch_headless = settings.replay_headless if headless is None else headless
+
     async with async_playwright() as pw:
-        browser = await pw.chromium.launch(headless=True, args=["--disable-gpu"])
+        browser = await pw.chromium.launch(
+            headless=launch_headless,
+            slow_mo=settings.replay_slow_mo_ms,
+            args=["--disable-gpu"],
+        )
         context_kwargs: dict = {
             "user_agent": DEFAULT_USER_AGENT,
             "viewport": _replay_viewport(workflow_snapshot),
@@ -135,7 +163,9 @@ async def replay_workflow(
                 elif stype == "extract":
                     config = extraction.get(step.get("ref", "main"))
                     if config:
+                        await _wait_for_extraction_ready(page, config)
                         data = await run_extraction(page, config)
+                        data = await llm_fill_missing(page, config, data)
         except Exception as exc:
             artifact_path = await _dump_failure_artifacts(page, execution_id)
             await context.close()

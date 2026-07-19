@@ -15,6 +15,7 @@ from app.llm.enrich import enrich_spec
 from app.llm.spec_builder import build_skeleton
 from app.models.api import CustomApi, SpecStatus
 from app.models.execution import ApiExecution, ExecutionStatus
+from app.models.user import User
 from app.models.wallet import REASON_CALL_DEBIT, REASON_CALL_REFUND, WalletLedger
 from app.models.workflow import Workflow
 from app.recorder.replay import ReplayError, replay_workflow
@@ -96,11 +97,19 @@ async def execute_api(payload: dict) -> None:
 
         workflow = await db.get(Workflow, api.workflow_id)
         storage_state = None
-        if workflow is not None and workflow.auth_state_encrypted is not None:
-            try:
-                storage_state = json.loads(decrypt_bytes(workflow.auth_state_encrypted))
-            except Exception:
-                storage_state = None
+        headless: bool | None = None
+        if workflow is not None:
+            if workflow.auth_state_encrypted is not None:
+                try:
+                    storage_state = json.loads(decrypt_bytes(workflow.auth_state_encrypted))
+                except Exception:
+                    storage_state = None
+            # Owner's per-run headless override (UI toggle on the API page).
+            owner = await db.get(User, workflow.user_id)
+            if owner is not None:
+                val = (owner.settings or {}).get("replay_headless")
+                if isinstance(val, bool):
+                    headless = val
 
         execution.status = ExecutionStatus.RUNNING
         execution.started_at = datetime.now(timezone.utc)
@@ -110,7 +119,7 @@ async def execute_api(payload: dict) -> None:
 
     try:
         replay_result = await asyncio.wait_for(
-            replay_workflow(workflow_snapshot, params, storage_state, execution_id),
+            replay_workflow(workflow_snapshot, params, storage_state, execution_id, headless=headless),
             timeout=settings.exec_timeout_seconds,
         )
         duration_ms = int((time.monotonic() - started) * 1000)

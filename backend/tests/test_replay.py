@@ -84,6 +84,41 @@ async def test_replay_uses_recorded_viewport():
     assert result["data"] == {"width": 1520}
 
 
+async def test_extract_waits_for_async_rendered_content():
+    # SPA-style: the list root renders ~800ms after load (like Canvas's React
+    # app). Extraction must wait for the root to attach instead of racing an
+    # empty DOM and silently returning nothing.
+    html = """
+    <div id='app'></div>
+    <script>
+    setTimeout(function() {
+      var a = document.createElement('div');
+      a.className = 'row';
+      var s = document.createElement('span');
+      s.className = 'name';
+      s.textContent = 'Alice';
+      a.appendChild(s);
+      document.getElementById('app').appendChild(a);
+    }, 800);
+    </script>
+    """
+    snapshot = {
+        "steps": [
+            {"i": 0, "type": "goto", "url": f"data:text/html,{quote(html)}"},
+            {"i": 1, "type": "extract", "ref": "main"},
+        ],
+        "extraction": {
+            "main": {
+                "mode": "list",
+                "root": ".row",
+                "fields": [{"name": "name", "selector": ".name", "take": "text"}],
+            }
+        },
+    }
+    result = await replay_workflow(snapshot, {}, None, uuid.uuid4())
+    assert result["data"] == [{"name": "Alice"}]
+
+
 async def test_all_selectors_missing_raises_replay_error_with_artifacts(fixture_site_url):
     execution_id = uuid.uuid4()
     snapshot = {

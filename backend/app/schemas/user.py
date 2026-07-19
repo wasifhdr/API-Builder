@@ -35,6 +35,7 @@ class SettingsUpdate(BaseModel):
 
     use_saved_logins: bool | None = None
     recorder_channel: Literal["chromium", "chrome"] | None = None
+    replay_headless: bool | None = None
 
 
 class RegisterRequest(BaseModel):
