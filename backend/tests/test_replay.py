@@ -4,6 +4,7 @@ from urllib.parse import quote
 import pytest
 
 from app.config import settings
+from app.recorder import llm_extract
 from app.recorder.replay import ReplayError, replay_workflow
 
 
@@ -138,11 +139,6 @@ async def test_all_selectors_missing_raises_replay_error_with_artifacts(fixture_
     assert exc_info.value.artifact_path == str(artifact_dir)
 
 
-from urllib.parse import quote as _quote
-
-from app.recorder import llm_extract
-
-
 async def test_extract_llm_engine_reads_page_text(monkeypatch):
     monkeypatch.setattr(llm_extract, "_llm_configured", lambda: True)
 
@@ -156,7 +152,7 @@ async def test_extract_llm_engine_reads_page_text(monkeypatch):
     html = "<h3>Aparthotel Stare Miasto</h3><p>Starting from BDT 14,049</p>"
     snapshot = {
         "steps": [
-            {"i": 0, "type": "goto", "url": f"data:text/html,{_quote(html)}"},
+            {"i": 0, "type": "goto", "url": f"data:text/html,{quote(html)}"},
             {"i": 1, "type": "extract", "ref": "main"},
         ],
         "extraction": {
@@ -177,8 +173,23 @@ async def test_extract_llm_engine_reads_page_text(monkeypatch):
 
 async def test_llm_engine_falls_back_to_selectors_when_llm_down(fixture_site_url, monkeypatch):
     # engine is "llm" but the LLM is not configured → semantic_extract returns
-    # None and replay must fall through to the recorded selector path.
+    # None and replay must fall through to the recorded selector path. Spy on
+    # semantic_extract to prove the engine branch actually ran (not that the
+    # engine key was silently ignored).
     monkeypatch.setattr(llm_extract, "_llm_configured", lambda: False)
+
+    import app.recorder.replay as replay_mod
+
+    real_semantic = replay_mod.semantic_extract
+    calls: list = []
+
+    async def spy(page, config):
+        result = await real_semantic(page, config)
+        calls.append(result)
+        return result
+
+    monkeypatch.setattr(replay_mod, "semantic_extract", spy)
+
     snapshot = {
         "steps": [
             {"i": 0, "type": "goto", "url": f"{fixture_site_url}/index.html"},
@@ -197,5 +208,6 @@ async def test_llm_engine_falls_back_to_selectors_when_llm_down(fixture_site_url
         },
     }
     result = await replay_workflow(snapshot, {}, None, uuid.uuid4())
+    assert calls == [None]  # the llm branch ran and semantic_extract returned None
     assert len(result["data"]) == 3
     assert result["data"][0] == {"title": "Physics 101", "price": 350}
