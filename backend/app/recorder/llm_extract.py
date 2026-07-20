@@ -47,6 +47,12 @@ def _llm_configured() -> bool:
     return True
 
 
+def _is_llm_field(field: dict) -> bool:
+    # The LLM reads the page's visible text, so it can only produce text/number
+    # fields. attr:/html fields stay on the selector path.
+    return (field.get("take") or "text") == "text"
+
+
 def _apply_transform(value: Any, transform: str | None) -> Any:
     if value is None or not transform or transform == "none":
         return value
@@ -288,7 +294,7 @@ async def semantic_extract(page: Page, config: dict) -> dict | list | None:
     error occurs, so the caller can fall back to the selector path. Never raises."""
     if not _llm_configured():
         return None
-    fields = config.get("fields") or []
+    fields = [f for f in (config.get("fields") or []) if _is_llm_field(f)]
     if not fields:
         return None
     try:

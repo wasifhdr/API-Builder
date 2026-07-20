@@ -50,6 +50,22 @@ def _resolve_value(value: dict | None, params: dict) -> str:
     return ""
 
 
+def _merge_extraction(selector_data: Any, llm_data: Any) -> Any:
+    # LLM owns text/number fields (overlaid on top); selectors own attr:/html
+    # fields (kept from selector_data). Shapes match: both a single dict, or
+    # both a list of dicts over the same root.
+    if isinstance(llm_data, dict) and isinstance(selector_data, dict):
+        return {**selector_data, **llm_data}
+    if isinstance(llm_data, list) and isinstance(selector_data, list):
+        n = max(len(selector_data), len(llm_data))
+        return [
+            {**(selector_data[i] if i < len(selector_data) else {}),
+             **(llm_data[i] if i < len(llm_data) else {})}
+            for i in range(n)
+        ]
+    return llm_data  # shape mismatch (shouldn't happen) — prefer the LLM result
+
+
 async def _locate(page: Page, selectors: list[str]):
     last_exc: Exception | None = None
     for selector, timeout_ms in zip(selectors, SELECTOR_ATTEMPT_TIMEOUTS_MS):
@@ -164,10 +180,14 @@ async def replay_workflow(
                     config = extraction.get(step.get("ref", "main"))
                     if config:
                         await _wait_for_extraction_ready(page, config)
-                        data = None
                         if config.get("engine") == "llm":
-                            data = await semantic_extract(page, config)
-                        if data is None:
+                            llm_data = await semantic_extract(page, config)
+                            if llm_data is None:
+                                data = await run_extraction(page, config)
+                            else:
+                                selector_data = await run_extraction(page, config)
+                                data = _merge_extraction(selector_data, llm_data)
+                        else:
                             data = await run_extraction(page, config)
                             data = await llm_fill_missing(page, config, data)
         except Exception as exc:

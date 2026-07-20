@@ -58,3 +58,11 @@ async def test_html_take_and_trim_transform(fixture_page):
     }
     result = await run_extraction(fixture_page, config)
     assert result[0]["title_html"] == "Physics 101"
+
+
+async def test_extract_empty_selector_yields_null(fixture_page):
+    # A field with no selector (normal in LLM-mode configs) must not crash the
+    # selector path with a querySelector('') SyntaxError — it yields null.
+    config = {"mode": "single", "fields": [{"name": "blank", "selector": "", "take": "text"}]}
+    result = await run_extraction(fixture_page, config)
+    assert result == {"blank": None}
