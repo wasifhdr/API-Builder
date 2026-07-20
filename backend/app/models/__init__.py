@@ -21,6 +21,7 @@ from app.models.billing import (
     VerificationMethod,
 )
 from app.models.execution import ApiExecution, ExecutionStatus
+from app.models.extraction_cache import ExtractionSelectorCache
 from app.models.plan_settings import PlanSettings
 from app.models.user import User, UserRole
 from app.models.wallet import CashoutRequest, CashoutStatus, Wallet, WalletLedger
@@ -50,6 +51,7 @@ __all__ = [
     "ApiInvite",
     "ExecutionStatus",
     "ApiExecution",
+    "ExtractionSelectorCache",
     "PlanSettings",
     "AdminAuditLog",
     "Wallet",
