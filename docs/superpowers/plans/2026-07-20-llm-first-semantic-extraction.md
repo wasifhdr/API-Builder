@@ -805,3 +805,228 @@ Expected: full suite passes.
 **Placeholder scan:** No TBD/TODO; every code step shows full code; every command has expected output.
 
 **Type consistency:** `semantic_extract(page, config) -> dict | list | None` is defined in Task 2 and consumed in Task 3 with the None-fallback contract. `_uses_prompt_schema`/`_model_name`/`_build_client` defined in Task 1 and used in `complete_json` (Task 1). `ExtractionField.description`/`example` and `ExtractionConfig.engine` defined in Task 4 Step 1 and consumed by the editor (Task 4 Steps 2-4) and backend prompt builders (Task 2, via the JSONB dict). Field-key names (`hotel_name`, `location`, `price`) are consistent across Tasks 2, 3, and 5.
+
+---
+
+## Addendum: per-field routing (Tasks 6–7)
+
+The final whole-branch review found that Tasks 1–4 made `engine:"llm"` an **all-or-nothing config switch**: when the LLM path succeeds it fully replaces the selector path, so `attr:href`/`attr:src` (link/image) fields — which the LLM only sees as `innerText` — return null/garbage. This contradicts the plan's own §3 / Scope intent ("selectors own links/images; LLM owns text/number"). It also let the editor silently backfill `engine:"llm"` onto edited legacy configs. Tasks 6–7 implement the per-field merge and give the engine an explicit, non-silent UI control.
+
+### Task 6: Per-field routing — LLM owns text/number, selectors own attr/html
+
+**Files:**
+- Modify: `backend/app/recorder/extraction.py:31-40` (guard empty selectors)
+- Modify: `backend/app/recorder/llm_extract.py` (`semantic_extract` filters to LLM-eligible fields; add `_is_llm_field`)
+- Modify: `backend/app/recorder/replay.py:163-172` (merge selector + LLM results) and add `_merge_extraction`
+- Test: `backend/tests/test_replay.py`, `backend/tests/test_extraction.py`
+
+**Interfaces:**
+- Consumes: existing `run_extraction`, `semantic_extract`, `llm_fill_missing`.
+- Produces: `app.recorder.replay._merge_extraction(selector_data, llm_data) -> dict | list`; `semantic_extract` now returns only LLM-eligible field keys (or `None` when a config has no LLM-eligible field).
+
+- [ ] **Step 1: Write the failing merge test**
+
+Append to `backend/tests/test_replay.py` (uses the top-level `quote`, `uuid`, `llm_extract` imports already present after Task 3's fix):
+
+```python
+async def test_llm_engine_merges_llm_text_with_selector_attr(monkeypatch):
+    # engine=llm with a mixed config: the text field comes from the LLM, the
+    # attr:href field comes from the selector path. Proves per-field routing.
+    monkeypatch.setattr(llm_extract, "_llm_configured", lambda: True)
+
+    async def fake_complete_json(system, user, schema, max_tokens=2000):
+        # The LLM is asked ONLY for text-eligible fields; it never returns "link".
+        return {"title": "Physics 101"}
+
+    monkeypatch.setattr(llm_extract, "complete_json", fake_complete_json)
+    html = "<a class='lnk' href='https://example.com/x'>Physics 101</a>"
+    snapshot = {
+        "steps": [
+            {"i": 0, "type": "goto", "url": f"data:text/html,{quote(html)}"},
+            {"i": 1, "type": "extract", "ref": "main"},
+        ],
+        "extraction": {
+            "main": {
+                "mode": "single",
+                "engine": "llm",
+                "fields": [
+                    {"name": "title", "description": "the title text"},
+                    {"name": "link", "selector": ".lnk", "take": "attr:href"},
+                ],
+            }
+        },
+    }
+    result = await replay_workflow(snapshot, {}, None, uuid.uuid4())
+    assert result["data"]["title"] == "Physics 101"           # from the LLM (fake returned it)
+    assert result["data"]["link"] == "https://example.com/x"  # from the selector (fake did NOT return it)
+```
+
+- [ ] **Step 2: Write the failing empty-selector guard test**
+
+Append to `backend/tests/test_extraction.py` (a test that a blank selector yields null instead of throwing `querySelector('')`). Reuse the existing `fixture_page` fixture used by every other test in this file:
+
+```python
+async def test_extract_empty_selector_yields_null(fixture_page):
+    # A field with no selector (normal in LLM-mode configs) must not crash the
+    # selector path with a querySelector('') SyntaxError — it yields null.
+    config = {"mode": "single", "fields": [{"name": "blank", "selector": "", "take": "text"}]}
+    result = await run_extraction(fixture_page, config)
+    assert result == {"blank": None}
+```
+
+- [ ] **Step 3: Run both tests to verify they fail**
+
+Run: `cd backend; uv run pytest tests/test_replay.py::test_llm_engine_merges_llm_text_with_selector_attr tests/test_extraction.py::test_extract_empty_selector_yields_null -v`
+Expected: FAIL — merge test returns `link: null` (LLM result wholly replaced selectors) or errors on the blank `title` selector; the guard test raises a Playwright `SyntaxError` from `querySelector('')`.
+
+- [ ] **Step 4: Guard empty selectors in the extraction JS**
+
+In `backend/app/recorder/extraction.py`, in the `extractFields` function inside `EXTRACTION_JS`, add an empty-selector guard as the first line of the loop body:
+
+```javascript
+  function extractFields(scope, fields) {
+    const obj = {};
+    for (const f of fields) {
+      if (!f.selector) { obj[f.name] = null; continue; }
+      const el = scope.querySelector(f.selector);
+      let value = el ? takeValue(el, f.take) : null;
+      value = applyTransform(value, f.transform);
+      obj[f.name] = value;
+    }
+    return obj;
+  }
+```
+
+- [ ] **Step 5: Filter `semantic_extract` to LLM-eligible fields**
+
+In `backend/app/recorder/llm_extract.py`, add a helper near the other module helpers:
+
+```python
+def _is_llm_field(field: dict) -> bool:
+    # The LLM reads the page's visible text, so it can only produce text/number
+    # fields. attr:/html fields stay on the selector path.
+    return (field.get("take") or "text") == "text"
+```
+
+Then in `semantic_extract`, replace the `fields = config.get("fields") or []` / `if not fields: return None` lines with a filter to LLM-eligible fields:
+
+```python
+    fields = [f for f in (config.get("fields") or []) if _is_llm_field(f)]
+    if not fields:
+        return None
+```
+
+(The rest of `semantic_extract`, `_semantic_single`, `_semantic_list` are unchanged — they now operate on the filtered list, so the LLM prompt/schema/result cover only text-eligible fields.)
+
+- [ ] **Step 6: Merge selector + LLM results in replay**
+
+In `backend/app/recorder/replay.py`, add a module-level helper (near `_resolve_value`):
+
+```python
+def _merge_extraction(selector_data: Any, llm_data: Any) -> Any:
+    # LLM owns text/number fields (overlaid on top); selectors own attr:/html
+    # fields (kept from selector_data). Shapes match: both a single dict, or
+    # both a list of dicts over the same root.
+    if isinstance(llm_data, dict) and isinstance(selector_data, dict):
+        return {**selector_data, **llm_data}
+    if isinstance(llm_data, list) and isinstance(selector_data, list):
+        n = max(len(selector_data), len(llm_data))
+        return [
+            {**(selector_data[i] if i < len(selector_data) else {}),
+             **(llm_data[i] if i < len(llm_data) else {})}
+            for i in range(n)
+        ]
+    return llm_data  # shape mismatch (shouldn't happen) — prefer the LLM result
+```
+
+Then replace the `extract` step block:
+
+```python
+                elif stype == "extract":
+                    config = extraction.get(step.get("ref", "main"))
+                    if config:
+                        await _wait_for_extraction_ready(page, config)
+                        if config.get("engine") == "llm":
+                            llm_data = await semantic_extract(page, config)
+                            if llm_data is None:
+                                data = await run_extraction(page, config)
+                            else:
+                                selector_data = await run_extraction(page, config)
+                                data = _merge_extraction(selector_data, llm_data)
+                        else:
+                            data = await run_extraction(page, config)
+                            data = await llm_fill_missing(page, config, data)
+```
+
+- [ ] **Step 7: Run the tests to verify they pass**
+
+Run: `cd backend; uv run pytest tests/test_replay.py tests/test_extraction.py tests/test_llm_semantic.py -v`
+Expected: PASS — the new merge and guard tests pass, and the existing replay/extraction/semantic tests still pass (existing LLM-mode tests use only text fields, so the merge overlays them onto null-selector results with the same final values).
+
+- [ ] **Step 8: Lint and commit**
+
+```bash
+cd backend; uv run ruff check app
+git add backend/app/recorder/extraction.py backend/app/recorder/llm_extract.py backend/app/recorder/replay.py backend/tests/test_replay.py backend/tests/test_extraction.py
+git commit -m "fix(extract): per-field routing — LLM owns text, selectors own attr/html"
+```
+
+### Task 7: Explicit engine control in the editor (no silent backfill)
+
+**Files:**
+- Modify: `frontend/src/pages/WorkflowEditor.tsx` (stop coercing loaded `engine`)
+- Modify: `frontend/src/components/ExtractionEditor.tsx` (add an engine radio)
+
+**Interfaces:**
+- Consumes: `ExtractionConfig.engine` (Task 4).
+- Produces: an explicit engine toggle; loaded legacy configs keep `engine: undefined` (→ selector path at replay) until the user opts in.
+
+- [ ] **Step 1: Stop auto-upgrading loaded configs**
+
+In `frontend/src/pages/WorkflowEditor.tsx`, in the extraction load block, change the engine coercion so a loaded config keeps its stored engine (absent stays absent — replay treats absent as selector):
+
+```typescript
+            engine: loaded.engine,
+```
+
+(Do NOT use `?? 'llm'` here. New/empty configs still default to `'llm'` via `EMPTY_EXTRACTION`; this line governs only already-saved configs, which must not silently flip to LLM on load.)
+
+- [ ] **Step 2: Add an engine radio to the editor**
+
+In `frontend/src/components/ExtractionEditor.tsx`, add an engine control in the top control row (next to the Single/List radios), using the existing `Radio` component. The checked state treats absent engine as `'selector'` (how it actually runs), and `EMPTY_EXTRACTION`'s `'llm'` default makes new configs show Smart:
+
+```tsx
+        <span className="ml-auto flex items-center gap-3">
+          <span className="text-[11px] font-bold uppercase tracking-wide text-ink/60">Engine</span>
+          <label className="flex items-center gap-1.5">
+            <Radio
+              disabled={disabled}
+              checked={(extraction.engine ?? 'selector') === 'llm'}
+              onChange={() => onChange({ ...extraction, engine: 'llm' })}
+            />
+            Smart (LLM)
+          </label>
+          <label className="flex items-center gap-1.5">
+            <Radio
+              disabled={disabled}
+              checked={(extraction.engine ?? 'selector') === 'selector'}
+              onChange={() => onChange({ ...extraction, engine: 'selector' })}
+            />
+            Selectors
+          </label>
+        </span>
+```
+
+Place this inside the existing `<div className="flex items-center gap-4 text-sm">` row that holds the Single/List radios (the `ml-auto` pushes it to the right).
+
+- [ ] **Step 3: Typecheck / build / lint**
+
+Run: `cd frontend; npm run build` → tsc + vite clean.
+Run: `cd frontend; npm run lint` → oxlint clean.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add frontend/src/pages/WorkflowEditor.tsx frontend/src/components/ExtractionEditor.tsx
+git commit -m "feat(ui): explicit engine toggle; stop silent llm backfill on loaded configs"
+```
