@@ -51,6 +51,25 @@ export default function ExtractionEditor({ extraction, onChange, disabled }: Pro
             className={`flex-1 font-mono ${CELL_INPUT}`}
           />
         )}
+        <span className="ml-auto flex items-center gap-3">
+          <span className="text-[11px] font-bold uppercase tracking-wide text-ink/60">Engine</span>
+          <label className="flex items-center gap-1.5">
+            <Radio
+              disabled={disabled}
+              checked={(extraction.engine ?? 'selector') === 'llm'}
+              onChange={() => onChange({ ...extraction, engine: 'llm' })}
+            />
+            Smart (LLM)
+          </label>
+          <label className="flex items-center gap-1.5">
+            <Radio
+              disabled={disabled}
+              checked={(extraction.engine ?? 'selector') === 'selector'}
+              onChange={() => onChange({ ...extraction, engine: 'selector' })}
+            />
+            Selectors
+          </label>
+        </span>
       </div>
 
       <table className="w-full text-xs">

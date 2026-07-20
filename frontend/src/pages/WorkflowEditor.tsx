@@ -68,7 +68,7 @@ export default function WorkflowEditor() {
           const sample = (wf.sample_output ?? null) as Record<string, unknown> | null
           setExtraction({
             ...loaded,
-            engine: loaded.engine ?? 'llm',
+            engine: loaded.engine,
             fields: loaded.fields.map((f) => ({
               ...f,
               example:
