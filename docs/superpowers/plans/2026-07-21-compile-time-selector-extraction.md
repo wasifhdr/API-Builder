@@ -337,7 +337,7 @@ Create `backend/app/recorder/selector_cache.py`:
 ```python
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -363,7 +363,7 @@ async def upsert_cache(
     )
     stmt = stmt.on_conflict_do_update(
         index_elements=["workflow_id", "ref", "field_name"],
-        set_={"selectors": stmt.excluded.selectors, "healed_at": __import__("sqlalchemy").func.now()},
+        set_={"selectors": stmt.excluded.selectors, "healed_at": func.now()},
     )
     await db.execute(stmt)
     await db.commit()
@@ -1389,11 +1389,31 @@ async def _extract_compiled(
             if filled and workflow_id is not None:
                 await _persist_heal(workflow_id, ref, field["name"], healed)
 
-    # 4. Last-resort value-extraction floor for anything still null.
-    floor = await semantic_extract(page, config)
-    if floor is not None:
-        data = _merge_extraction(data, floor)
+    # 4. Last-resort value-extraction floor for anything STILL null. Overlaid
+    #    null-safe (never overwrites a value a selector already produced), since
+    #    semantic_extract returns null for text-ineligible/absent fields.
+    if _has_null(data, fields):
+        floor = await semantic_extract(page, config)
+        if isinstance(floor, dict) and isinstance(data, dict):
+            for k, v in floor.items():
+                if data.get(k) is None and v is not None:
+                    data[k] = v
+        elif isinstance(floor, list) and isinstance(data, list):
+            for i, frow in enumerate(floor):
+                if i < len(data) and isinstance(frow, dict):
+                    for k, v in frow.items():
+                        if data[i].get(k) is None and v is not None:
+                            data[i][k] = v
     return data
+
+
+def _has_null(data: Any, fields: list[dict]) -> bool:
+    names = [f["name"] for f in fields]
+    if isinstance(data, dict):
+        return any(data.get(n) is None for n in names)
+    if isinstance(data, list):
+        return any(row.get(n) is None for row in data for n in names)
+    return False
 
 
 def _apply_cache_overlay(config: dict, cached: dict, ref: str) -> dict:
@@ -1415,45 +1435,7 @@ async def _persist_heal(workflow_id: uuid.UUID, ref: str, field_name: str, selec
         log.warning("selector cache upsert failed: %s", exc)
 ```
 
-Note: `_merge_extraction` overlays the LLM floor ON TOP of `data`. Because `semantic_extract` filters to text-eligible fields and returns null for absent ones, and `_merge_extraction` uses `{**selector_data, **llm_data}`, a null from the floor would overwrite a good selector value. To prevent that, change the floor merge to prefer existing non-null values: replace step 4's merge with a null-safe overlay:
-
-```python
-    floor = await selector_compiler_floor(page, config)
-```
-
-Instead of adding a new function, keep it inline and null-safe — replace the step-4 block above with:
-
-```python
-    # 4. Last-resort value-extraction floor for anything STILL null (never
-    #    overwrites a value a selector already produced).
-    if _has_null(data, fields):
-        floor = await semantic_extract(page, config)
-        if isinstance(floor, dict) and isinstance(data, dict):
-            for k, v in floor.items():
-                if data.get(k) is None and v is not None:
-                    data[k] = v
-        elif isinstance(floor, list) and isinstance(data, list):
-            for i, frow in enumerate(floor):
-                if i < len(data) and isinstance(frow, dict):
-                    for k, v in frow.items():
-                        if data[i].get(k) is None and v is not None:
-                            data[i][k] = v
-    return data
-```
-
-And add the helper:
-
-```python
-def _has_null(data: Any, fields: list[dict]) -> bool:
-    names = [f["name"] for f in fields]
-    if isinstance(data, dict):
-        return any(data.get(n) is None for n in names)
-    if isinstance(data, list):
-        return any(row.get(n) is None for row in data for n in names)
-    return False
-```
-
-(Delete the earlier `floor = await semantic_extract(...)` / `_merge_extraction` lines from step 4 — the null-safe block above replaces them. `_merge_extraction` remains used by the legacy `engine=="llm"` path only.)
+The step-4 floor above is null-safe on purpose: `semantic_extract` returns null for text-ineligible/absent fields, so a plain `_merge_extraction` (`{**selector_data, **llm_data}`) would let a floor-null clobber a good selector value. The per-key `if data.get(k) is None` guard prevents that. `_merge_extraction` stays in the module, used only by the legacy `engine=="llm"` path.
 
 - [ ] **Step 5: Route the extract step and pass `workflow_id`**
 
