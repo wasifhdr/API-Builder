@@ -21,6 +21,13 @@ def _build_client() -> AsyncOpenAI:
             timeout=180.0,
             max_retries=1,
         )
+    if settings.llm_provider == "gemini":
+        return AsyncOpenAI(
+            base_url=settings.gemini_base_url,
+            api_key=settings.gemini_api_key,
+            timeout=180.0,
+            max_retries=1,
+        )
     return AsyncOpenAI(
         base_url=settings.llama_base_url,
         api_key="sk-local",  # ignored by llama-server unless --api-key is set
@@ -31,9 +38,25 @@ def _build_client() -> AsyncOpenAI:
 
 client = _build_client()
 
-# llama-server serves a single model, so its name is cosmetic; CraftX is a
-# multi-model gateway and requires the real model name.
-MODEL_NAME = settings.craftx_model if settings.llm_provider == "craftx" else "local"
+
+def _model_name() -> str:
+    # llama-server serves a single model, so its name is cosmetic; craftx and
+    # gemini (a Google-served Gemma/Gemini model) require the real model name.
+    if settings.llm_provider == "craftx":
+        return settings.craftx_model
+    if settings.llm_provider == "gemini":
+        return settings.gemini_model
+    return "local"
+
+
+MODEL_NAME = _model_name()
+
+
+def _uses_prompt_schema() -> bool:
+    # craftx 502s on any response_format; Google's OpenAI-compat layer is
+    # unreliable with json_schema. Both embed the schema in the prompt and lean
+    # on _extract_json to strip the code fence / prose the model wraps it in.
+    return settings.llm_provider in ("craftx", "gemini")
 
 
 def _extract_json(content: str) -> dict:
@@ -82,10 +105,7 @@ def _extract_json(content: str) -> dict:
 
 async def complete_json(system: str, user: str, schema: dict, max_tokens: int = 2000) -> dict:
     kwargs: dict = {}
-    if settings.llm_provider == "craftx":
-        # This gateway 502s on any response_format (json_object or json_schema),
-        # so we ask for JSON in the prompt and lean on _extract_json to strip
-        # the code fence / prose the model wraps it in.
+    if _uses_prompt_schema():
         user = (
             f"{user}\n\nRespond with ONLY a JSON object matching this schema "
             f"(no prose, no markdown fence):\n{json.dumps(schema)}"

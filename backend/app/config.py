@@ -50,6 +50,9 @@ class Settings(BaseSettings):
     craftx_base_url: str = ""
     craftx_api_key: str = ""
     craftx_model: str = ""
+    gemini_base_url: str = "https://generativelanguage.googleapis.com/v1beta/openai/"
+    gemini_api_key: str = ""
+    gemini_model: str = ""
 
     @property
     def admin_email_set(self) -> set[str]:
