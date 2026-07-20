@@ -103,7 +103,13 @@ def _extract_json(content: str) -> dict:
     raise ValueError(f"unbalanced JSON object in LLM response: {content[:500]!r}")
 
 
-async def complete_json(system: str, user: str, schema: dict, max_tokens: int = 2000) -> dict:
+async def complete_json(
+    system: str,
+    user: str,
+    schema: dict,
+    max_tokens: int = 2000,
+    images: list[str] | None = None,
+) -> dict:
     kwargs: dict = {}
     if _uses_prompt_schema():
         user = (
@@ -115,11 +121,23 @@ async def complete_json(system: str, user: str, schema: dict, max_tokens: int = 
             "type": "json_schema",
             "json_schema": {"name": "out", "schema": schema, "strict": True},
         }
+
+    if images:
+        user_content: object = [
+            {"type": "text", "text": user},
+            *(
+                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{img}"}}
+                for img in images
+            ),
+        ]
+    else:
+        user_content = user
+
     resp = await client.chat.completions.create(
         model=MODEL_NAME,
         messages=[
             {"role": "system", "content": system},
-            {"role": "user", "content": user},
+            {"role": "user", "content": user_content},
         ],
         temperature=0.2,
         max_tokens=max_tokens,
