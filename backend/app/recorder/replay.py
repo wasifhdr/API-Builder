@@ -5,7 +5,7 @@ from playwright.async_api import Page, async_playwright
 
 from app.config import settings
 from app.recorder.extraction import run_extraction
-from app.recorder.llm_extract import llm_fill_missing
+from app.recorder.llm_extract import llm_fill_missing, semantic_extract
 
 # Per-candidate wait budgets, tried in order until one selector matches —
 # absorbs the small selector drift that's common between recording and
@@ -164,8 +164,12 @@ async def replay_workflow(
                     config = extraction.get(step.get("ref", "main"))
                     if config:
                         await _wait_for_extraction_ready(page, config)
-                        data = await run_extraction(page, config)
-                        data = await llm_fill_missing(page, config, data)
+                        data = None
+                        if config.get("engine") == "llm":
+                            data = await semantic_extract(page, config)
+                        if data is None:
+                            data = await run_extraction(page, config)
+                            data = await llm_fill_missing(page, config, data)
         except Exception as exc:
             artifact_path = await _dump_failure_artifacts(page, execution_id)
             await context.close()

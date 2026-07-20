@@ -136,3 +136,66 @@ async def test_all_selectors_missing_raises_replay_error_with_artifacts(fixture_
     assert (artifact_dir / "screenshot.png").exists()
     assert (artifact_dir / "page.html").exists()
     assert exc_info.value.artifact_path == str(artifact_dir)
+
+
+from urllib.parse import quote as _quote
+
+from app.recorder import llm_extract
+
+
+async def test_extract_llm_engine_reads_page_text(monkeypatch):
+    monkeypatch.setattr(llm_extract, "_llm_configured", lambda: True)
+
+    async def fake_complete_json(system, user, schema, max_tokens=2000):
+        # The page text must have reached the prompt.
+        assert "Aparthotel Stare Miasto" in user
+        return {"hotel_name": "Aparthotel Stare Miasto", "price": "BDT 14,049"}
+
+    monkeypatch.setattr(llm_extract, "complete_json", fake_complete_json)
+
+    html = "<h3>Aparthotel Stare Miasto</h3><p>Starting from BDT 14,049</p>"
+    snapshot = {
+        "steps": [
+            {"i": 0, "type": "goto", "url": f"data:text/html,{_quote(html)}"},
+            {"i": 1, "type": "extract", "ref": "main"},
+        ],
+        "extraction": {
+            "main": {
+                "mode": "single",
+                "engine": "llm",
+                "fields": [
+                    {"name": "hotel_name", "description": "the featured hotel name"},
+                    {"name": "price", "description": "starting price", "transform": "number"},
+                ],
+            }
+        },
+    }
+    result = await replay_workflow(snapshot, {}, None, uuid.uuid4())
+    assert result["data"]["hotel_name"] == "Aparthotel Stare Miasto"
+    assert result["data"]["price"] == 14049
+
+
+async def test_llm_engine_falls_back_to_selectors_when_llm_down(fixture_site_url, monkeypatch):
+    # engine is "llm" but the LLM is not configured → semantic_extract returns
+    # None and replay must fall through to the recorded selector path.
+    monkeypatch.setattr(llm_extract, "_llm_configured", lambda: False)
+    snapshot = {
+        "steps": [
+            {"i": 0, "type": "goto", "url": f"{fixture_site_url}/index.html"},
+            {"i": 1, "type": "extract", "ref": "main"},
+        ],
+        "extraction": {
+            "main": {
+                "mode": "list",
+                "engine": "llm",
+                "root": ".book-item",
+                "fields": [
+                    {"name": "title", "selector": ".book-title", "take": "text"},
+                    {"name": "price", "selector": ".book-price", "take": "text", "transform": "number"},
+                ],
+            }
+        },
+    }
+    result = await replay_workflow(snapshot, {}, None, uuid.uuid4())
+    assert len(result["data"]) == 3
+    assert result["data"][0] == {"title": "Physics 101", "price": 350}
