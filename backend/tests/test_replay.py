@@ -243,3 +243,40 @@ async def test_llm_engine_merges_llm_text_with_selector_attr(monkeypatch):
     result = await replay_workflow(snapshot, {}, None, uuid.uuid4())
     assert result["data"]["title"] == "Physics 101"           # from the LLM (fake returned it)
     assert result["data"]["link"] == "https://example.com/x"  # from the selector (fake did NOT return it)
+
+
+async def test_llm_engine_merges_list_mode(monkeypatch):
+    # List mode per-index merge: each row's text field comes from the LLM,
+    # its attr:href field from the selector path.
+    monkeypatch.setattr(llm_extract, "_llm_configured", lambda: True)
+
+    async def fake_complete_json(system, user, schema, max_tokens=2000):
+        return {"items": [{"index": 0, "title": "Alpha"}, {"index": 1, "title": "Beta"}]}
+
+    monkeypatch.setattr(llm_extract, "complete_json", fake_complete_json)
+    html = (
+        "<div class='row'><a class='lnk' href='https://ex.com/a'>x</a></div>"
+        "<div class='row'><a class='lnk' href='https://ex.com/b'>y</a></div>"
+    )
+    snapshot = {
+        "steps": [
+            {"i": 0, "type": "goto", "url": f"data:text/html,{quote(html)}"},
+            {"i": 1, "type": "extract", "ref": "main"},
+        ],
+        "extraction": {
+            "main": {
+                "mode": "list",
+                "engine": "llm",
+                "root": ".row",
+                "fields": [
+                    {"name": "title", "description": "the row title"},
+                    {"name": "link", "selector": ".lnk", "take": "attr:href"},
+                ],
+            }
+        },
+    }
+    result = await replay_workflow(snapshot, {}, None, uuid.uuid4())
+    assert result["data"] == [
+        {"title": "Alpha", "link": "https://ex.com/a"},
+        {"title": "Beta", "link": "https://ex.com/b"},
+    ]

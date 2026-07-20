@@ -63,7 +63,9 @@ def _merge_extraction(selector_data: Any, llm_data: Any) -> Any:
              **(llm_data[i] if i < len(llm_data) else {})}
             for i in range(n)
         ]
-    return llm_data  # shape mismatch (shouldn't happen) — prefer the LLM result
+    # Shape mismatch can't occur — both paths are driven by config["mode"];
+    # prefer LLM if it ever does.
+    return llm_data
 
 
 async def _locate(page: Page, selectors: list[str]):
