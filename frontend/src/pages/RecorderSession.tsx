@@ -12,7 +12,7 @@ import { STATUS_BADGE, STATUS_LABEL } from '../lib/recorderStatus'
 import { useRecorder } from '../hooks/useRecorder'
 import type { ExtractionConfig, ParameterSuggestion } from '../lib/types'
 
-const EMPTY_EXTRACTION: ExtractionConfig = { mode: 'list', root: '', fields: [] }
+const EMPTY_EXTRACTION: ExtractionConfig = { mode: 'list', root: '', engine: 'llm', fields: [] }
 
 export default function RecorderSession() {
   const { workflowId } = useParams<{ workflowId: string }>()

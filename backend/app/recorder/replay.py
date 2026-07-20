@@ -5,7 +5,7 @@ from playwright.async_api import Page, async_playwright
 
 from app.config import settings
 from app.recorder.extraction import run_extraction
-from app.recorder.llm_extract import llm_fill_missing
+from app.recorder.llm_extract import llm_fill_missing, semantic_extract
 
 # Per-candidate wait budgets, tried in order until one selector matches —
 # absorbs the small selector drift that's common between recording and
@@ -48,6 +48,24 @@ def _resolve_value(value: dict | None, params: dict) -> str:
     if "param" in value:
         return str(params.get(value["param"], ""))
     return ""
+
+
+def _merge_extraction(selector_data: Any, llm_data: Any) -> Any:
+    # LLM owns text/number fields (overlaid on top); selectors own attr:/html
+    # fields (kept from selector_data). Shapes match: both a single dict, or
+    # both a list of dicts over the same root.
+    if isinstance(llm_data, dict) and isinstance(selector_data, dict):
+        return {**selector_data, **llm_data}
+    if isinstance(llm_data, list) and isinstance(selector_data, list):
+        n = max(len(selector_data), len(llm_data))
+        return [
+            {**(selector_data[i] if i < len(selector_data) else {}),
+             **(llm_data[i] if i < len(llm_data) else {})}
+            for i in range(n)
+        ]
+    # Shape mismatch can't occur — both paths are driven by config["mode"];
+    # prefer LLM if it ever does.
+    return llm_data
 
 
 async def _locate(page: Page, selectors: list[str]):
@@ -164,8 +182,16 @@ async def replay_workflow(
                     config = extraction.get(step.get("ref", "main"))
                     if config:
                         await _wait_for_extraction_ready(page, config)
-                        data = await run_extraction(page, config)
-                        data = await llm_fill_missing(page, config, data)
+                        if config.get("engine") == "llm":
+                            llm_data = await semantic_extract(page, config)
+                            if llm_data is None:
+                                data = await run_extraction(page, config)
+                            else:
+                                selector_data = await run_extraction(page, config)
+                                data = _merge_extraction(selector_data, llm_data)
+                        else:
+                            data = await run_extraction(page, config)
+                            data = await llm_fill_missing(page, config, data)
         except Exception as exc:
             artifact_path = await _dump_failure_artifacts(page, execution_id)
             await context.close()

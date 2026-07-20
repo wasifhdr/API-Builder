@@ -25,7 +25,7 @@ export default function ExtractionEditor({ extraction, onChange, disabled }: Pro
       ...extraction,
       fields: [
         ...extraction.fields,
-        { name: `field${extraction.fields.length + 1}`, selector: '', take: 'text', transform: 'none' },
+        { name: `field${extraction.fields.length + 1}`, description: '', selector: '', take: 'text', transform: 'none' },
       ],
     })
   }
@@ -51,13 +51,33 @@ export default function ExtractionEditor({ extraction, onChange, disabled }: Pro
             className={`flex-1 font-mono ${CELL_INPUT}`}
           />
         )}
+        <span className="ml-auto flex items-center gap-3">
+          <span className="text-[11px] font-bold uppercase tracking-wide text-ink/60">Engine</span>
+          <label className="flex items-center gap-1.5">
+            <Radio
+              disabled={disabled}
+              checked={(extraction.engine ?? 'selector') === 'llm'}
+              onChange={() => onChange({ ...extraction, engine: 'llm' })}
+            />
+            Smart (LLM)
+          </label>
+          <label className="flex items-center gap-1.5">
+            <Radio
+              disabled={disabled}
+              checked={(extraction.engine ?? 'selector') === 'selector'}
+              onChange={() => onChange({ ...extraction, engine: 'selector' })}
+            />
+            Selectors
+          </label>
+        </span>
       </div>
 
       <table className="w-full text-xs">
         <thead>
           <tr className="text-left">
             <th className="pb-1 text-[11px] font-bold uppercase tracking-wide text-ink/60">Name</th>
-            <th className="pb-1 text-[11px] font-bold uppercase tracking-wide text-ink/60">Selector</th>
+            <th className="pb-1 text-[11px] font-bold uppercase tracking-wide text-ink/60">Description</th>
+            <th className="pb-1 text-[11px] font-bold uppercase tracking-wide text-ink/60">Selector (optional)</th>
             <th className="pb-1 text-[11px] font-bold uppercase tracking-wide text-ink/60">Take</th>
             <th className="pb-1 text-[11px] font-bold uppercase tracking-wide text-ink/60">Transform</th>
             <th />
@@ -72,6 +92,16 @@ export default function ExtractionEditor({ extraction, onChange, disabled }: Pro
                   disabled={disabled}
                   value={field.name}
                   onChange={(e) => updateField(i, { name: e.target.value })}
+                  className={CELL_INPUT}
+                />
+              </td>
+              <td className="py-1 pr-1.5">
+                <input
+                  type="text"
+                  disabled={disabled}
+                  value={field.description ?? ''}
+                  placeholder="what this field is, e.g. starting price in BDT"
+                  onChange={(e) => updateField(i, { description: e.target.value })}
                   className={CELL_INPUT}
                 />
               </td>

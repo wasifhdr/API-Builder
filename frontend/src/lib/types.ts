@@ -35,11 +35,15 @@ export interface ExtractionField {
   selector: string
   take: string
   transform?: string
+  description?: string
+  example?: string
 }
 
 export interface ExtractionConfig {
   mode: 'single' | 'list'
   root?: string
+  engine?: 'llm' | 'selector'
+  scope?: string
   fields: ExtractionField[]
 }
 

@@ -31,6 +31,7 @@ EXTRACTION_JS = """
   function extractFields(scope, fields) {
     const obj = {};
     for (const f of fields) {
+      if (!f.selector) { obj[f.name] = null; continue; }
       const el = scope.querySelector(f.selector);
       let value = el ? takeValue(el, f.take) : null;
       value = applyTransform(value, f.transform);

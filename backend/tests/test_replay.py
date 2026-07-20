@@ -4,6 +4,7 @@ from urllib.parse import quote
 import pytest
 
 from app.config import settings
+from app.recorder import llm_extract
 from app.recorder.replay import ReplayError, replay_workflow
 
 
@@ -136,3 +137,146 @@ async def test_all_selectors_missing_raises_replay_error_with_artifacts(fixture_
     assert (artifact_dir / "screenshot.png").exists()
     assert (artifact_dir / "page.html").exists()
     assert exc_info.value.artifact_path == str(artifact_dir)
+
+
+async def test_extract_llm_engine_reads_page_text(monkeypatch):
+    monkeypatch.setattr(llm_extract, "_llm_configured", lambda: True)
+
+    async def fake_complete_json(system, user, schema, max_tokens=2000):
+        # The page text must have reached the prompt.
+        assert "Aparthotel Stare Miasto" in user
+        return {"hotel_name": "Aparthotel Stare Miasto", "price": "BDT 14,049"}
+
+    monkeypatch.setattr(llm_extract, "complete_json", fake_complete_json)
+
+    html = "<h3>Aparthotel Stare Miasto</h3><p>Starting from BDT 14,049</p>"
+    snapshot = {
+        "steps": [
+            {"i": 0, "type": "goto", "url": f"data:text/html,{quote(html)}"},
+            {"i": 1, "type": "extract", "ref": "main"},
+        ],
+        "extraction": {
+            "main": {
+                "mode": "single",
+                "engine": "llm",
+                "fields": [
+                    {"name": "hotel_name", "description": "the featured hotel name"},
+                    {"name": "price", "description": "starting price", "transform": "number"},
+                ],
+            }
+        },
+    }
+    result = await replay_workflow(snapshot, {}, None, uuid.uuid4())
+    assert result["data"]["hotel_name"] == "Aparthotel Stare Miasto"
+    assert result["data"]["price"] == 14049
+
+
+async def test_llm_engine_falls_back_to_selectors_when_llm_down(fixture_site_url, monkeypatch):
+    # engine is "llm" but the LLM is not configured → semantic_extract returns
+    # None and replay must fall through to the recorded selector path. Spy on
+    # semantic_extract to prove the engine branch actually ran (not that the
+    # engine key was silently ignored).
+    monkeypatch.setattr(llm_extract, "_llm_configured", lambda: False)
+
+    import app.recorder.replay as replay_mod
+
+    real_semantic = replay_mod.semantic_extract
+    calls: list = []
+
+    async def spy(page, config):
+        result = await real_semantic(page, config)
+        calls.append(result)
+        return result
+
+    monkeypatch.setattr(replay_mod, "semantic_extract", spy)
+
+    snapshot = {
+        "steps": [
+            {"i": 0, "type": "goto", "url": f"{fixture_site_url}/index.html"},
+            {"i": 1, "type": "extract", "ref": "main"},
+        ],
+        "extraction": {
+            "main": {
+                "mode": "list",
+                "engine": "llm",
+                "root": ".book-item",
+                "fields": [
+                    {"name": "title", "selector": ".book-title", "take": "text"},
+                    {"name": "price", "selector": ".book-price", "take": "text", "transform": "number"},
+                ],
+            }
+        },
+    }
+    result = await replay_workflow(snapshot, {}, None, uuid.uuid4())
+    assert calls == [None]  # the llm branch ran and semantic_extract returned None
+    assert len(result["data"]) == 3
+    assert result["data"][0] == {"title": "Physics 101", "price": 350}
+
+
+async def test_llm_engine_merges_llm_text_with_selector_attr(monkeypatch):
+    # engine=llm with a mixed config: the text field comes from the LLM, the
+    # attr:href field comes from the selector path. Proves per-field routing.
+    monkeypatch.setattr(llm_extract, "_llm_configured", lambda: True)
+
+    async def fake_complete_json(system, user, schema, max_tokens=2000):
+        # The LLM is asked ONLY for text-eligible fields; it never returns "link".
+        return {"title": "Physics 101"}
+
+    monkeypatch.setattr(llm_extract, "complete_json", fake_complete_json)
+    html = "<a class='lnk' href='https://example.com/x'>Physics 101</a>"
+    snapshot = {
+        "steps": [
+            {"i": 0, "type": "goto", "url": f"data:text/html,{quote(html)}"},
+            {"i": 1, "type": "extract", "ref": "main"},
+        ],
+        "extraction": {
+            "main": {
+                "mode": "single",
+                "engine": "llm",
+                "fields": [
+                    {"name": "title", "description": "the title text"},
+                    {"name": "link", "selector": ".lnk", "take": "attr:href"},
+                ],
+            }
+        },
+    }
+    result = await replay_workflow(snapshot, {}, None, uuid.uuid4())
+    assert result["data"]["title"] == "Physics 101"           # from the LLM (fake returned it)
+    assert result["data"]["link"] == "https://example.com/x"  # from the selector (fake did NOT return it)
+
+
+async def test_llm_engine_merges_list_mode(monkeypatch):
+    # List mode per-index merge: each row's text field comes from the LLM,
+    # its attr:href field from the selector path.
+    monkeypatch.setattr(llm_extract, "_llm_configured", lambda: True)
+
+    async def fake_complete_json(system, user, schema, max_tokens=2000):
+        return {"items": [{"index": 0, "title": "Alpha"}, {"index": 1, "title": "Beta"}]}
+
+    monkeypatch.setattr(llm_extract, "complete_json", fake_complete_json)
+    html = (
+        "<div class='row'><a class='lnk' href='https://ex.com/a'>x</a></div>"
+        "<div class='row'><a class='lnk' href='https://ex.com/b'>y</a></div>"
+    )
+    snapshot = {
+        "steps": [
+            {"i": 0, "type": "goto", "url": f"data:text/html,{quote(html)}"},
+            {"i": 1, "type": "extract", "ref": "main"},
+        ],
+        "extraction": {
+            "main": {
+                "mode": "list",
+                "engine": "llm",
+                "root": ".row",
+                "fields": [
+                    {"name": "title", "description": "the row title"},
+                    {"name": "link", "selector": ".lnk", "take": "attr:href"},
+                ],
+            }
+        },
+    }
+    result = await replay_workflow(snapshot, {}, None, uuid.uuid4())
+    assert result["data"] == [
+        {"title": "Alpha", "link": "https://ex.com/a"},
+        {"title": "Beta", "link": "https://ex.com/b"},
+    ]
