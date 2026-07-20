@@ -85,3 +85,22 @@ async def test_list_mode_fills_every_item_by_index(monkeypatch):
     page = FakePage(["Alice — engineer", "Bob — designer"])
     out = await llm_extract.semantic_extract(page, config)
     assert out == [{"name": "Alice"}, {"name": "Bob"}]
+
+
+async def test_list_mode_fills_null_for_indices_llm_omits(monkeypatch):
+    monkeypatch.setattr(llm_extract, "_llm_configured", lambda: True)
+
+    async def fake_complete_json(system, user, schema, max_tokens=2000):
+        # 3 items on the page, but the LLM returns only 2 — the third must become null.
+        return {"items": [{"index": 0, "name": "Alice"}, {"index": 1, "name": "Bob"}]}
+
+    monkeypatch.setattr(llm_extract, "complete_json", fake_complete_json)
+    config = {
+        "mode": "list",
+        "engine": "llm",
+        "root": ".card",
+        "fields": [{"name": "name", "description": "person name"}],
+    }
+    page = FakePage(["Alice — engineer", "Bob — designer", "Carol — writer"])
+    out = await llm_extract.semantic_extract(page, config)
+    assert out == [{"name": "Alice"}, {"name": "Bob"}, {"name": None}]

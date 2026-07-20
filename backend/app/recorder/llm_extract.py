@@ -282,7 +282,7 @@ async def _semantic_list(page: Page, config: dict, fields: list[dict]) -> list[d
     ]
 
 
-async def semantic_extract(page: Page, config: dict) -> Any:
+async def semantic_extract(page: Page, config: dict) -> dict | list | None:
     """LLM-first extraction: read the page's visible text and return the
     configured named fields. Returns None when the LLM is unavailable or any
     error occurs, so the caller can fall back to the selector path. Never raises."""
