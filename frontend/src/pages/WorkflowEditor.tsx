@@ -34,9 +34,10 @@ interface WorkflowDetail {
   extraction: { main?: ExtractionConfig }
   published_api_id: string | null
   published_api_slug: string | null
+  sample_output?: unknown
 }
 
-const EMPTY_EXTRACTION: ExtractionConfig = { mode: 'list', root: '', fields: [] }
+const EMPTY_EXTRACTION: ExtractionConfig = { mode: 'list', root: '', engine: 'llm', fields: [] }
 
 export default function WorkflowEditor() {
   const { workflowId } = useParams<{ workflowId: string }>()
@@ -62,7 +63,22 @@ export default function WorkflowEditor() {
         setWorkflow(wf)
         setName(wf.name)
         setParameters(wf.parameters)
-        setExtraction(wf.extraction.main ?? EMPTY_EXTRACTION)
+        const loaded = wf.extraction.main
+        if (loaded) {
+          const sample = (wf.sample_output ?? null) as Record<string, unknown> | null
+          setExtraction({
+            ...loaded,
+            engine: loaded.engine ?? 'llm',
+            fields: loaded.fields.map((f) => ({
+              ...f,
+              example:
+                f.example ??
+                (sample && typeof sample[f.name] === 'string' ? (sample[f.name] as string) : undefined),
+            })),
+          })
+        } else {
+          setExtraction(EMPTY_EXTRACTION)
+        }
       })
       .catch((err) => setError(err instanceof Error ? err.message : 'Failed to load workflow'))
   }, [workflowId])
