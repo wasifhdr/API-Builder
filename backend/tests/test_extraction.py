@@ -66,3 +66,27 @@ async def test_extract_empty_selector_yields_null(fixture_page):
     config = {"mode": "single", "fields": [{"name": "blank", "selector": "", "take": "text"}]}
     result = await run_extraction(fixture_page, config)
     assert result == {"blank": None}
+
+
+async def test_field_selectors_list_tries_in_order(fixture_page):
+    # First selector misses, second hits — the ranked list must fall through.
+    config = {
+        "mode": "single",
+        "fields": [
+            {"name": "title", "selectors": [".does-not-exist", ".page-title"], "take": "text"},
+        ],
+    }
+    result = await run_extraction(fixture_page, config)
+    assert result["title"] == "Fixture Shop"
+
+
+async def test_roots_list_tries_in_order(fixture_page):
+    # First root matches nothing, second matches the real rows.
+    config = {
+        "mode": "list",
+        "roots": [".no-such-root", ".book-item"],
+        "fields": [{"name": "title", "selectors": [".book-title"], "take": "text"}],
+    }
+    result = await run_extraction(fixture_page, config)
+    assert len(result) == 3
+    assert result[0]["title"] == "Physics 101"
