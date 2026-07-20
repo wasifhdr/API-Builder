@@ -42,6 +42,8 @@ def _llm_configured() -> bool:
         return False
     if settings.llm_provider == "craftx":
         return bool(settings.craftx_base_url and settings.craftx_api_key and settings.craftx_model)
+    if settings.llm_provider == "gemini":
+        return bool(settings.gemini_api_key and settings.gemini_model)
     return True
 
 
@@ -171,3 +173,130 @@ async def llm_fill_missing(page: Page, config: dict, data: Any) -> Any:
     except Exception as exc:  # never let the fallback break a working replay
         log.warning("llm extraction fallback failed: %s", exc)
         return data
+
+
+PAGE_TEXT_CAP = 12_000  # chars of page text sent in single mode (keeps us under Gemma's 16K TPM)
+
+
+async def _page_text(page: Page, scope: str | None) -> dict:
+    js = """
+    (cfg) => {
+      const el = cfg.scope ? document.querySelector(cfg.scope) : null;
+      const base = el || document.body;
+      return {
+        title: document.title || '',
+        url: window.location.href,
+        text: ((base && base.innerText) || '').trim().slice(0, cfg.cap),
+      };
+    }
+    """
+    return await page.evaluate(js, {"scope": scope or "", "cap": PAGE_TEXT_CAP})
+
+
+def _field_hint(field: dict) -> str:
+    parts = []
+    desc = field.get("description")
+    if desc:
+        parts.append(f"— {desc}")
+    ex = field.get("example")
+    if isinstance(ex, str) and ex.strip():
+        parts.append(f"(example: {ex.strip()[:200]!r})")
+    return (" " + " ".join(parts)) if parts else ""
+
+
+def _single_prompt(fields: list[dict], page_data: dict) -> str:
+    lines = [
+        "Extract these fields from the web page below.",
+        f"Page title: {page_data.get('title', '')}",
+        f"URL: {page_data.get('url', '')}",
+        "",
+    ]
+    for f in fields:
+        lines.append(f"- {f['name']}{_field_hint(f)}")
+    lines.append("")
+    lines.append(
+        'Return JSON with exactly these keys: {"<field>": <value or null>, ...}. '
+        "If a field is genuinely not present on the page, use null — never invent a value."
+    )
+    lines.append("")
+    lines.append("Page text:")
+    lines.append(page_data.get("text", ""))
+    return "\n".join(lines)
+
+
+def _list_prompt(fields: list[dict], items: list[tuple[int, str]]) -> str:
+    lines = ["Extract these fields from each list item below:"]
+    for f in fields:
+        lines.append(f"- {f['name']}{_field_hint(f)}")
+    lines.append("")
+    lines.append(
+        'Return JSON {"items": [{"index": <n>, ...fields}]} for exactly the indices shown. '
+        "If an item genuinely does not contain a field, use null — never invent a value."
+    )
+    lines.append("")
+    lines.append("Items:")
+    for idx, text in items:
+        lines.append(f"[index {idx}] {text}")
+    return "\n".join(lines)
+
+
+_SEMANTIC_SYSTEM = (
+    "You extract structured field values from a web page's visible text. "
+    "Return only valid JSON matching the schema. Never fabricate values."
+)
+
+
+async def _semantic_single(page: Page, config: dict, fields: list[dict]) -> dict:
+    field_names = [f["name"] for f in fields]
+    page_data = await _page_text(page, config.get("scope"))
+    schema = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": field_names,
+        "properties": {n: {"type": ["string", "null"]} for n in field_names},
+    }
+    user = _single_prompt(fields, page_data)
+    async with _LLM_LOCK:
+        out = await complete_json(_SEMANTIC_SYSTEM, user, schema, max_tokens=1000)
+    transforms = {f["name"]: f.get("transform") for f in fields}
+    return {n: _apply_transform(out.get(n), transforms.get(n)) for n in field_names}
+
+
+async def _semantic_list(page: Page, config: dict, fields: list[dict]) -> list[dict]:
+    field_names = [f["name"] for f in fields]
+    texts = await _item_texts(page, config["root"])
+    pending = [(i, t) for i, t in enumerate(texts) if t][:MAX_ITEMS]
+    if not pending:
+        return []
+    if len(texts) > MAX_ITEMS:
+        log.warning("semantic list extraction: capped at %s of %s items", MAX_ITEMS, len(texts))
+    schema = _build_schema(field_names)
+    user = _list_prompt(fields, pending)
+    async with _LLM_LOCK:
+        out = await complete_json(_SEMANTIC_SYSTEM, user, schema, max_tokens=min(4000, 200 * len(pending) + 500))
+    by_index = {it.get("index"): it for it in out.get("items", []) if isinstance(it, dict)}
+    transforms = {f["name"]: f.get("transform") for f in fields}
+    return [
+        {n: _apply_transform((by_index.get(i) or {}).get(n), transforms.get(n)) for n in field_names}
+        for i in range(len(texts))
+    ]
+
+
+async def semantic_extract(page: Page, config: dict) -> Any:
+    """LLM-first extraction: read the page's visible text and return the
+    configured named fields. Returns None when the LLM is unavailable or any
+    error occurs, so the caller can fall back to the selector path. Never raises."""
+    if not _llm_configured():
+        return None
+    fields = config.get("fields") or []
+    if not fields:
+        return None
+    try:
+        if config.get("mode") == "list":
+            if not config.get("root"):
+                return None
+            return await _semantic_list(page, config, fields)
+        return await _semantic_single(page, config, fields)
+    except Exception as exc:  # never let extraction break a replay
+        log.warning("semantic extraction failed: %s", exc)
+        return None
