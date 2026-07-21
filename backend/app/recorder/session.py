@@ -18,6 +18,7 @@ from app.recorder.constants import RECORDED_EVENT_TYPES, VALUE_STEP_TYPES
 from app.recorder.extraction import run_extraction
 from app.recorder.profiles import get_profile_dir
 from app.recorder.schema_infer import infer_schema
+from app.recorder.selector_compiler import compile_from_pick, compile_root_from_pick
 from app.redis import redis_client
 
 log = logging.getLogger("recorder")
@@ -351,6 +352,10 @@ class RecordingSession:
                 self.extraction["main"] = config
         elif ctype == "test_extraction":
             await self._handle_test_extraction()
+        elif ctype == "compile_root":
+            await self._handle_compile_root()
+        elif ctype == "compile_field":
+            await self._handle_compile_field(cmd)
         elif ctype == "suggest_authoring":
             self._start_authoring_task()
         elif ctype == "save":
@@ -406,6 +411,49 @@ class RecordingSession:
             await self._publish({"t": "extraction_result", "sample": sample, "schema": schema})
         except Exception as exc:
             await self._publish({"t": "error", "message": f"extraction failed: {exc}"})
+
+    async def _handle_compile_root(self) -> None:
+        if self._last_pick is None or self.page is None:
+            return
+        try:
+            roots = await compile_root_from_pick(self.page, self._last_pick)
+        except Exception as exc:
+            log.warning("compile_root failed: %s", exc)
+            roots = [self._last_pick.get("generalized") or ""]
+        await self._publish({"t": "root_compiled", "roots": [r for r in roots if r]})
+
+    async def _handle_compile_field(self, cmd: dict) -> None:
+        if self._last_pick is None or self.page is None:
+            return
+        name = cmd.get("name") or "field"
+        take = cmd.get("take") or "text"
+        field = {
+            "name": name,
+            "description": cmd.get("description"),
+            "example": self._last_pick.get("preview"),
+            "take": take,
+        }
+        try:
+            selectors = await compile_from_pick(
+                self.page,
+                self._last_pick,
+                mode=cmd.get("mode") or "single",
+                root=cmd.get("root"),
+                field=field,
+            )
+        except Exception as exc:
+            log.warning("compile_field failed: %s", exc)
+            selectors = list(self._last_pick.get("selectors") or [])
+        await self._publish({
+            "t": "field_compiled",
+            "field": {
+                "name": name,
+                "description": cmd.get("description"),
+                "take": take,
+                "example": self._last_pick.get("preview"),
+                "selectors": selectors,
+            },
+        })
 
     def _start_authoring_task(self) -> None:
         if self._authoring_task is not None and not self._authoring_task.done():
