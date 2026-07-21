@@ -37,7 +37,7 @@ interface WorkflowDetail {
   sample_output?: unknown
 }
 
-const EMPTY_EXTRACTION: ExtractionConfig = { mode: 'list', root: '', engine: 'llm', fields: [] }
+const EMPTY_EXTRACTION: ExtractionConfig = { mode: 'single', fields: [] }
 
 export default function WorkflowEditor() {
   const { workflowId } = useParams<{ workflowId: string }>()

@@ -1,4 +1,4 @@
-import { cardClasses, Radio } from './ui'
+import { cardClasses } from './ui'
 import type { ExtractionConfig, ExtractionField } from '../lib/types'
 
 interface Props {
@@ -32,52 +32,12 @@ export default function ExtractionEditor({ extraction, onChange, disabled }: Pro
 
   return (
     <div className={cardClasses({ variant: 'quiet', className: 'space-y-3' })}>
-      <div className="flex items-center gap-4 text-sm">
-        <label className="flex items-center gap-1.5">
-          <Radio disabled={disabled} checked={extraction.mode === 'single'} onChange={() => onChange({ ...extraction, mode: 'single' })} />
-          Single
-        </label>
-        <label className="flex items-center gap-1.5">
-          <Radio disabled={disabled} checked={extraction.mode === 'list'} onChange={() => onChange({ ...extraction, mode: 'list' })} />
-          List
-        </label>
-        {extraction.mode === 'list' && (
-          <input
-            type="text"
-            disabled={disabled}
-            value={extraction.root ?? ''}
-            onChange={(e) => onChange({ ...extraction, root: e.target.value })}
-            placeholder="root selector, e.g. .book-item"
-            className={`flex-1 font-mono ${CELL_INPUT}`}
-          />
-        )}
-        <span className="ml-auto flex items-center gap-3">
-          <span className="text-[11px] font-bold uppercase tracking-wide text-ink/60">Engine</span>
-          <label className="flex items-center gap-1.5">
-            <Radio
-              disabled={disabled}
-              checked={(extraction.engine ?? 'selector') === 'llm'}
-              onChange={() => onChange({ ...extraction, engine: 'llm' })}
-            />
-            Smart (LLM)
-          </label>
-          <label className="flex items-center gap-1.5">
-            <Radio
-              disabled={disabled}
-              checked={(extraction.engine ?? 'selector') === 'selector'}
-              onChange={() => onChange({ ...extraction, engine: 'selector' })}
-            />
-            Selectors
-          </label>
-        </span>
-      </div>
-
       <table className="w-full text-xs">
         <thead>
           <tr className="text-left">
             <th className="pb-1 text-[11px] font-bold uppercase tracking-wide text-ink/60">Name</th>
             <th className="pb-1 text-[11px] font-bold uppercase tracking-wide text-ink/60">Description</th>
-            <th className="pb-1 text-[11px] font-bold uppercase tracking-wide text-ink/60">Selector (optional)</th>
+            <th className="pb-1 text-[11px] font-bold uppercase tracking-wide text-ink/60">Selector</th>
             <th className="pb-1 text-[11px] font-bold uppercase tracking-wide text-ink/60">Take</th>
             <th className="pb-1 text-[11px] font-bold uppercase tracking-wide text-ink/60">Transform</th>
             <th />
@@ -106,13 +66,9 @@ export default function ExtractionEditor({ extraction, onChange, disabled }: Pro
                 />
               </td>
               <td className="py-1 pr-1.5">
-                <input
-                  type="text"
-                  disabled={disabled}
-                  value={field.selector}
-                  onChange={(e) => updateField(i, { selector: e.target.value })}
-                  className={`${CELL_INPUT} font-mono`}
-                />
+                <span className="block max-w-[220px] truncate font-mono text-[11px] text-ink/60">
+                  {field.selectors?.[0] ?? field.selector ?? '—'}
+                </span>
               </td>
               <td className="py-1 pr-1.5">
                 <select
