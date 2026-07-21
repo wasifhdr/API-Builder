@@ -143,12 +143,51 @@
     hideOverlay();
   }, true);
 
+  let __abPickCounter = 0;
+
+  // Compact, LLM-friendly description of an element and its ancestors. Drops
+  // generated-looking ids/classes so the model anchors on stable attributes.
+  function describeNode(el) {
+    const classes = Array.from(el.classList || [])
+      .filter((c) => !GENERATED_ID_RE.test(c))
+      .slice(0, 6);
+    const data = {};
+    for (const attr of Array.from(el.attributes || [])) {
+      if (attr.name.startsWith('data-') && attr.name !== 'data-ab-pick') {
+        data[attr.name] = attr.value.slice(0, 40);
+      }
+    }
+    const id = el.id && !GENERATED_ID_RE.test(el.id) ? el.id : '';
+    return {
+      tag: el.tagName ? el.tagName.toLowerCase() : '',
+      id,
+      classes,
+      data,
+      role: el.getAttribute ? (el.getAttribute('role') || '') : '',
+      aria: el.getAttribute ? (el.getAttribute('aria-label') || '') : '',
+      text: (el.textContent || '').trim().slice(0, 80),
+    };
+  }
+
+  function buildOutline(el, maxLevels = 5) {
+    const outline = [];
+    let node = el;
+    for (let i = 0; i < maxLevels && node && node.nodeType === 1 && node !== document.body; i++) {
+      outline.push(describeNode(node));
+      node = node.parentElement;
+    }
+    return outline;
+  }
+
   document.addEventListener('click', (e) => {
     if (window.__abMode !== 'pick') return;
     const el = e.target;
     if (!(el instanceof Element)) return;
     e.preventDefault();
     e.stopPropagation();
+
+    const pickId = `p${++__abPickCounter}`;
+    el.setAttribute('data-ab-pick', pickId);
 
     const selectors = rankSelectors(el);
     const generalized = stripLastNthOfType(selectors[selectors.length - 1]);
@@ -158,7 +197,17 @@
     } catch {
       count = 1;
     }
+    const rect = el.getBoundingClientRect();
     const preview = (el.textContent || '').trim().slice(0, 200);
-    emit({ type: 'pick_result', selectors, preview, count, generalized });
+    emit({
+      type: 'pick_result',
+      pickId,
+      selectors,
+      preview,
+      count,
+      generalized,
+      outline: buildOutline(el),
+      rect: { x: rect.left, y: rect.top, width: rect.width, height: rect.height },
+    });
   }, true);
 })();

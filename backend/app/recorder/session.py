@@ -56,6 +56,7 @@ class RecordingSession:
         self._warned_popup = False
         self._warned_iframes = False
         self._authoring_task: asyncio.Task | None = None
+        self._last_pick: dict | None = None
 
     @property
     def evt_channel(self) -> str:
@@ -254,6 +255,14 @@ class RecordingSession:
         etype = event.get("type")
 
         if etype == "pick_result":
+            self._last_pick = {
+                "pick_id": event.get("pickId"),
+                "selectors": event.get("selectors", []),
+                "preview": event.get("preview"),
+                "generalized": event.get("generalized"),
+                "outline": event.get("outline", []),
+                "rect": event.get("rect"),
+            }
             await self._publish({
                 "t": "pick_result",
                 "candidate": {
@@ -261,6 +270,7 @@ class RecordingSession:
                     "preview": event.get("preview"),
                     "count": event.get("count"),
                     "generalized": event.get("generalized"),
+                    "pick_id": event.get("pickId"),
                 },
             })
             return
