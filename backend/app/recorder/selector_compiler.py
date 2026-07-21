@@ -19,6 +19,10 @@ from app.recorder.llm_extract import _LLM_LOCK, _llm_configured
 log = logging.getLogger("recorder")
 
 MAX_SELECTORS = 3
+# Thinking models (Google-served Gemma) spend ~400-600 tokens in a <thought>
+# block BEFORE emitting the JSON; 400 total truncated it mid-thought, so every
+# call fell back to positional selectors. Give ample headroom for thought + JSON.
+COMPILE_MAX_TOKENS = 1500
 
 _SYSTEM = (
     "You write robust CSS selectors for a specific web element. Prefer stable "
@@ -141,7 +145,7 @@ async def compile_from_pick(
             images = await _screenshot_b64(page, pick_ctx.get("rect"))
             user = _field_prompt(field, pick_ctx.get("outline") or [], mode, root)
             async with _LLM_LOCK:
-                out = await complete_json(_SYSTEM, user, _SELECTOR_SCHEMA, max_tokens=400, images=images)
+                out = await complete_json(_SYSTEM, user, _SELECTOR_SCHEMA, max_tokens=COMPILE_MAX_TOKENS, images=images)
             for sel in out.get("selectors") or []:
                 if isinstance(sel, str) and await _validate(page, pick_id, mode, root, sel):
                     ranked.append(sel)
@@ -191,7 +195,7 @@ async def compile_root_from_pick(page: Page, pick_ctx: dict) -> list[str]:
             )
             images = await _screenshot_b64(page, pick_ctx.get("rect"))
             async with _LLM_LOCK:
-                out = await complete_json(_SYSTEM, user, _SELECTOR_SCHEMA, max_tokens=400, images=images)
+                out = await complete_json(_SYSTEM, user, _SELECTOR_SCHEMA, max_tokens=COMPILE_MAX_TOKENS, images=images)
             for sel in out.get("selectors") or []:
                 if isinstance(sel, str) and await _valid_root(sel):
                     ranked.append(sel)
@@ -257,7 +261,7 @@ async def reheal(page: Page, *, mode: str, root: str | None, field: dict) -> lis
             f"Return up to {MAX_SELECTORS} candidate CSS selectors, best first."
         )
         async with _LLM_LOCK:
-            out = await complete_json(_SYSTEM, user, _SELECTOR_SCHEMA, max_tokens=400)
+            out = await complete_json(_SYSTEM, user, _SELECTOR_SCHEMA, max_tokens=COMPILE_MAX_TOKENS)
         validated = [
             sel
             for sel in (out.get("selectors") or [])

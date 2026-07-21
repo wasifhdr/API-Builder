@@ -7,7 +7,11 @@ from app.config import settings
 
 # Strips a reasoning block a thinking-capable model might emit even when not
 # asked to (e.g. if LLM_PROVIDER is later switched back to a thinking model).
-_THINK_BLOCK_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
+# Strips a reasoning block a thinking-capable model may emit even when not asked
+# to. Covers <think>, <thought>, <thinking> — Google-served Gemma wraps its
+# answer in <thought>…</thought> and often echoes the schema/example JSON INSIDE
+# it, so this must run before we hunt for the first "{".
+_THINK_BLOCK_RE = re.compile(r"<(think|thought|thinking)>.*?</\1>", re.DOTALL | re.IGNORECASE)
 # Strips a ```json ... ``` (or bare ``` ... ```) fence some instruct models
 # wrap structured output in even when response_format is honored.
 _CODE_FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL | re.IGNORECASE)
