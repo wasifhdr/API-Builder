@@ -1,19 +1,18 @@
+import type { ComponentProps } from 'react'
 import { STATUS_BADGE, STATUS_LABEL } from '../lib/recorderStatus'
-import type { PickCandidate, RecorderStatus, Step } from '../lib/types'
+import type { RecorderStatus, Step } from '../lib/types'
+import ExtractionWizard from './ExtractionWizard'
 import RecorderStepList from './RecorderStepList'
-import { Badge, Button, cardClasses } from './ui'
+import { Badge, Button } from './ui'
 
 interface RecorderPipCardProps {
   status: RecorderStatus
   steps: Step[]
-  mode: 'record' | 'pick'
   interactive: boolean
-  pickResult: PickCandidate | null
-  onSetMode: (mode: 'record' | 'pick') => void
+  wizard: ComponentProps<typeof ExtractionWizard>
+  onRecord: () => void
   onUndo: (i: number) => void
   onMarkParam: (stepI: number, name: string) => void
-  onUseAsListRoot: () => void
-  onAddField: () => void
   onSave: () => void
   onCancel: () => void
 }
@@ -27,14 +26,11 @@ interface RecorderPipCardProps {
 export default function RecorderPipCard({
   status,
   steps,
-  mode,
   interactive,
-  pickResult,
-  onSetMode,
+  wizard,
+  onRecord,
   onUndo,
   onMarkParam,
-  onUseAsListRoot,
-  onAddField,
   onSave,
   onCancel,
 }: RecorderPipCardProps) {
@@ -50,46 +46,11 @@ export default function RecorderPipCard({
       </div>
 
       <div className="flex items-center gap-2">
-        <Button
-          variant={mode === 'record' ? 'ink' : 'default'}
-          size="sm"
-          onClick={() => onSetMode('record')}
-          disabled={!interactive}
-        >
+        <Button variant="default" size="sm" onClick={onRecord} disabled={!interactive}>
           Record
         </Button>
-        <Button
-          variant={mode === 'pick' ? 'ink' : 'default'}
-          size="sm"
-          onClick={() => onSetMode('pick')}
-          disabled={!interactive}
-        >
-          Pick element
-        </Button>
+        <ExtractionWizard {...wizard} disabled={!interactive} />
       </div>
-
-      {mode === 'pick' && (
-        <div className={`${cardClasses({ variant: 'callout', accent: 'blue' })} space-y-2`}>
-          {!pickResult && <p className="text-xs text-ink/70">Click an element in the browser to pick it.</p>}
-          {pickResult && (
-            <>
-              <p className="truncate font-mono text-xs text-ink/80">{pickResult.selectors[0]}</p>
-              <p className="text-xs text-ink/60">
-                {pickResult.count} similar element(s)
-                {pickResult.preview && <> — &ldquo;{pickResult.preview.slice(0, 40)}&rdquo;</>}
-              </p>
-              <div className="flex gap-2">
-                <Button variant="ink" size="sm" onClick={onUseAsListRoot}>
-                  Use as list root
-                </Button>
-                <Button size="sm" onClick={onAddField}>
-                  Add as field
-                </Button>
-              </div>
-            </>
-          )}
-        </div>
-      )}
 
       <RecorderStepList
         steps={steps}

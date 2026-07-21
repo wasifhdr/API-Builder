@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom'
 import { Link, Navigate, useNavigate, useParams } from 'react-router-dom'
 import AppShell from '../components/AppShell'
 import ExtractionEditor from '../components/ExtractionEditor'
+import ExtractionWizard from '../components/ExtractionWizard'
 import RecorderPipCard from '../components/RecorderPipCard'
 import RecorderStepList from '../components/RecorderStepList'
 import { Badge, Button, buttonClasses, cardClasses, Spinner, StatChip } from '../components/ui'
@@ -22,13 +23,16 @@ export default function RecorderSession() {
     steps,
     error,
     saved,
-    mode,
     pickResult,
     extractionResult,
     warnings,
     authoringPending,
     parameterSuggestions,
     extractionFieldSuggestions,
+    wizardStep,
+    wizardMode,
+    wizardFields,
+    lastCompiled,
     undoStep,
     bringToFront,
     setMode,
@@ -40,8 +44,33 @@ export default function RecorderSession() {
     dismissExtractionFieldSuggestion,
     save,
     cancel,
+    startWizard,
+    chooseWizardMode,
+    confirmRoot,
+    compileValue,
+    addCompiledField,
+    undoPick,
+    finishWizard,
+    cancelWizard,
   } = useRecorder(workflowId!)
   const interactive = status === 'ready'
+
+  const wizardProps = {
+    step: wizardStep,
+    mode: wizardMode,
+    fields: wizardFields,
+    pickResult,
+    lastCompiled,
+    disabled: !interactive,
+    onStart: startWizard,
+    onChooseMode: chooseWizardMode,
+    onConfirmRoot: confirmRoot,
+    onCompileValue: compileValue,
+    onAddField: addCompiledField,
+    onUndoPick: undoPick,
+    onFinish: finishWizard,
+    onCancel: cancelWizard,
+  }
 
   const { supported: pipSupported, pipWindow, open: openPip, close: closePip } = usePipWindow()
 
@@ -73,22 +102,6 @@ export default function RecorderSession() {
   function updateExtraction(next: ExtractionConfig) {
     setExtractionState(next)
     setExtraction(next)
-  }
-
-  function addFieldFromPick() {
-    if (!pickResult) return
-    updateExtraction({
-      ...extraction,
-      fields: [
-        ...extraction.fields,
-        { name: `field${extraction.fields.length + 1}`, selector: pickResult.selectors[0], take: 'text', transform: 'none' },
-      ],
-    })
-  }
-
-  function useAsListRoot() {
-    if (!pickResult?.generalized) return
-    updateExtraction({ ...extraction, mode: 'list', root: pickResult.generalized })
   }
 
   function acceptParameterSuggestion(suggestion: ParameterSuggestion) {
@@ -160,22 +173,10 @@ export default function RecorderSession() {
       )}
 
       <div className="mb-4 flex items-center gap-2">
-        <Button
-          variant={mode === 'record' ? 'ink' : 'default'}
-          size="sm"
-          onClick={() => setMode('record')}
-          disabled={!interactive}
-        >
+        <Button variant="default" size="sm" onClick={() => setMode('record')} disabled={!interactive}>
           Record
         </Button>
-        <Button
-          variant={mode === 'pick' ? 'ink' : 'default'}
-          size="sm"
-          onClick={() => setMode('pick')}
-          disabled={!interactive}
-        >
-          Pick element
-        </Button>
+        <ExtractionWizard {...wizardProps} />
         <div className="ml-auto flex items-center gap-2">
           {pipSupported && (
             <Button
@@ -192,29 +193,6 @@ export default function RecorderSession() {
           </Button>
         </div>
       </div>
-
-      {mode === 'pick' && (
-        <div className={`${cardClasses({ variant: 'callout', accent: 'blue' })} mb-4 space-y-2`}>
-          {!pickResult && <p className="text-sm text-ink/70">Click an element in the browser window to pick it.</p>}
-          {pickResult && (
-            <>
-              <p className="text-sm text-ink/80">
-                Picked: <span className="font-mono">{pickResult.selectors[0]}</span>
-                {pickResult.preview && <> — &ldquo;{pickResult.preview.slice(0, 60)}&rdquo;</>}
-              </p>
-              <p className="text-sm text-ink/60">{pickResult.count} similar element(s) found on the page.</p>
-              <div className="flex gap-2">
-                <Button variant="ink" size="sm" onClick={useAsListRoot}>
-                  Use as list root
-                </Button>
-                <Button size="sm" onClick={addFieldFromPick}>
-                  Add as field
-                </Button>
-              </div>
-            </>
-          )}
-        </div>
-      )}
 
       <section className="mb-8">
         <div className="mb-2 flex items-center justify-between">
@@ -315,14 +293,11 @@ export default function RecorderSession() {
           <RecorderPipCard
             status={status}
             steps={steps}
-            mode={mode}
             interactive={interactive}
-            pickResult={pickResult}
-            onSetMode={setMode}
+            wizard={wizardProps}
+            onRecord={() => setMode('record')}
             onUndo={undoStep}
             onMarkParam={markParam}
-            onUseAsListRoot={useAsListRoot}
-            onAddField={addFieldFromPick}
             onSave={save}
             onCancel={cancel}
           />,
