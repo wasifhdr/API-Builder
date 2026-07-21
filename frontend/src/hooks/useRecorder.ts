@@ -1,12 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type {
+  CompiledField,
   ExtractionConfig,
+  ExtractionField,
   ExtractionFieldSuggestion,
   Parameter,
   ParameterSuggestion,
   PickCandidate,
   RecorderStatus,
   Step,
+  WizardStep,
 } from '../lib/types'
 
 interface RecorderState {
@@ -22,6 +25,11 @@ interface RecorderState {
   authoringPending: boolean
   parameterSuggestions: ParameterSuggestion[]
   extractionFieldSuggestions: ExtractionFieldSuggestion[]
+  wizardStep: WizardStep
+  wizardMode: 'single' | 'list'
+  wizardRoots: string[]
+  wizardFields: ExtractionField[]
+  lastCompiled: CompiledField | null
 }
 
 const RECONNECT_DELAY_MS = 2000
@@ -40,6 +48,11 @@ export function useRecorder(workflowId: string) {
     authoringPending: false,
     parameterSuggestions: [],
     extractionFieldSuggestions: [],
+    wizardStep: 'idle',
+    wizardMode: 'single',
+    wizardRoots: [],
+    wizardFields: [],
+    lastCompiled: null,
   })
   const wsRef = useRef<WebSocket | null>(null)
   const reconnectTimer = useRef<number | null>(null)
@@ -73,6 +86,16 @@ export function useRecorder(workflowId: string) {
           break
         case 'pick_result':
           setState((s) => ({ ...s, pickResult: msg.candidate }))
+          break
+        case 'root_compiled':
+          setState((s) => ({
+            ...s,
+            wizardRoots: msg.roots ?? [],
+            wizardStep: 'choose-values',
+          }))
+          break
+        case 'field_compiled':
+          setState((s) => ({ ...s, lastCompiled: msg.field }))
           break
         case 'extraction_result':
           setState((s) => ({ ...s, extractionResult: { sample: msg.sample, schema: msg.schema } }))
@@ -140,6 +163,87 @@ export function useRecorder(workflowId: string) {
     [send],
   )
 
+  const startWizard = useCallback(() => {
+    setState((s) => ({
+      ...s,
+      wizardStep: 'choose-mode',
+      wizardMode: 'single',
+      wizardRoots: [],
+      wizardFields: [],
+      lastCompiled: null,
+      mode: 'pick',
+      pickResult: null,
+    }))
+    send({ t: 'set_mode', mode: 'pick' })
+  }, [send])
+
+  const chooseWizardMode = useCallback((mode: 'single' | 'list') => {
+    setState((s) => ({
+      ...s,
+      wizardMode: mode,
+      wizardStep: mode === 'list' ? 'pick-root' : 'choose-values',
+    }))
+  }, [])
+
+  const confirmRoot = useCallback(() => {
+    // Ask the worker to compile the picked element into ranked root selectors;
+    // the 'root_compiled' event advances the wizard to 'choose-values'.
+    send({ t: 'compile_root' })
+  }, [send])
+
+  const compileValue = useCallback(
+    (name: string, description: string, take: string) => {
+      setState((s) => ({ ...s, lastCompiled: null }))
+      send({
+        t: 'compile_field',
+        mode: state.wizardMode,
+        root: state.wizardRoots[0] ?? null,
+        name,
+        description,
+        take,
+      })
+    },
+    [send, state.wizardMode, state.wizardRoots],
+  )
+
+  const addCompiledField = useCallback(() => {
+    setState((s) => {
+      if (!s.lastCompiled) return s
+      const field: ExtractionField = {
+        name: s.lastCompiled.name,
+        description: s.lastCompiled.description,
+        take: s.lastCompiled.take,
+        example: s.lastCompiled.example ?? undefined,
+        selectors: s.lastCompiled.selectors,
+        transform: 'none',
+      }
+      return { ...s, wizardFields: [...s.wizardFields, field], lastCompiled: null, pickResult: null }
+    })
+  }, [])
+
+  const undoPick = useCallback(() => {
+    setState((s) => ({ ...s, pickResult: null, lastCompiled: null }))
+  }, [])
+
+  const finishWizard = useCallback(() => {
+    setState((s) => {
+      const config: ExtractionConfig = {
+        mode: s.wizardMode,
+        engine: 'compiled',
+        roots: s.wizardMode === 'list' ? s.wizardRoots : undefined,
+        fields: s.wizardFields,
+      }
+      send({ t: 'set_extraction', config })
+      send({ t: 'set_mode', mode: 'record' })
+      return { ...s, wizardStep: 'idle', mode: 'record', pickResult: null, lastCompiled: null }
+    })
+  }, [send])
+
+  const cancelWizard = useCallback(() => {
+    setState((s) => ({ ...s, wizardStep: 'idle', mode: 'record', pickResult: null, lastCompiled: null }))
+    send({ t: 'set_mode', mode: 'record' })
+  }, [send])
+
   const suggestAuthoring = useCallback(() => {
     setState((s) => ({ ...s, authoringPending: true }))
     send({ t: 'suggest_authoring' })
@@ -169,6 +273,11 @@ export function useRecorder(workflowId: string) {
     authoringPending: state.authoringPending,
     parameterSuggestions: state.parameterSuggestions,
     extractionFieldSuggestions: state.extractionFieldSuggestions,
+    wizardStep: state.wizardStep,
+    wizardMode: state.wizardMode,
+    wizardRoots: state.wizardRoots,
+    wizardFields: state.wizardFields,
+    lastCompiled: state.lastCompiled,
     setMode,
     undoStep: (i: number) => send({ t: 'undo_step', i }),
     bringToFront: () => send({ t: 'bring_to_front' }),
@@ -181,5 +290,13 @@ export function useRecorder(workflowId: string) {
     dismissExtractionFieldSuggestion,
     save: () => send({ t: 'save' }),
     cancel: () => send({ t: 'cancel' }),
+    startWizard,
+    chooseWizardMode,
+    confirmRoot,
+    compileValue,
+    addCompiledField,
+    undoPick,
+    finishWizard,
+    cancelWizard,
   }
 }

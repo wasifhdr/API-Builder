@@ -19,6 +19,7 @@ export interface PickCandidate {
   preview: string | null
   count: number
   generalized: string | null
+  pick_id?: string
 }
 
 export interface Parameter {
@@ -32,7 +33,8 @@ export interface Parameter {
 
 export interface ExtractionField {
   name: string
-  selector: string
+  selector?: string
+  selectors?: string[]
   take: string
   transform?: string
   description?: string
@@ -42,9 +44,20 @@ export interface ExtractionField {
 export interface ExtractionConfig {
   mode: 'single' | 'list'
   root?: string
-  engine?: 'llm' | 'selector'
+  roots?: string[]
+  engine?: 'compiled' | 'llm' | 'selector'
   scope?: string
   fields: ExtractionField[]
+}
+
+export type WizardStep = 'idle' | 'choose-mode' | 'pick-root' | 'choose-values'
+
+export interface CompiledField {
+  name: string
+  description?: string
+  take: string
+  example: string | null
+  selectors: string[]
 }
 
 /** AI-suggested parameter for a recorded fill/select_option step — advisory
