@@ -119,7 +119,10 @@ async def execute_api(payload: dict) -> None:
 
     try:
         replay_result = await asyncio.wait_for(
-            replay_workflow(workflow_snapshot, params, storage_state, execution_id, headless=headless),
+            replay_workflow(
+                workflow_snapshot, params, storage_state, execution_id,
+                headless=headless, workflow_id=api.workflow_id,
+            ),
             timeout=settings.exec_timeout_seconds,
         )
         duration_ms = int((time.monotonic() - started) * 1000)

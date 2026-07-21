@@ -4,7 +4,7 @@ from urllib.parse import quote
 import pytest
 
 from app.config import settings
-from app.recorder import llm_extract
+from app.recorder import llm_extract, selector_compiler
 from app.recorder.replay import ReplayError, replay_workflow
 
 
@@ -280,3 +280,52 @@ async def test_llm_engine_merges_list_mode(monkeypatch):
         {"title": "Alpha", "link": "https://ex.com/a"},
         {"title": "Beta", "link": "https://ex.com/b"},
     ]
+
+
+async def test_compiled_engine_uses_stored_selectors(monkeypatch):
+    # No heal needed: the stored selector resolves. reheal must NOT be called.
+    async def boom(*a, **k):
+        raise AssertionError("reheal should not run when selectors resolve")
+
+    monkeypatch.setattr(selector_compiler, "reheal", boom)
+    html = "<div class='card'><h3 class='title'>Physics 101</h3></div>"
+    snapshot = {
+        "steps": [
+            {"i": 0, "type": "goto", "url": f"data:text/html,{quote(html)}"},
+            {"i": 1, "type": "extract", "ref": "main"},
+        ],
+        "extraction": {
+            "main": {
+                "mode": "single",
+                "engine": "compiled",
+                "fields": [{"name": "title", "selectors": [".card .title"], "take": "text"}],
+            }
+        },
+    }
+    result = await replay_workflow(snapshot, {}, None, uuid.uuid4())
+    assert result["data"]["title"] == "Physics 101"
+
+
+async def test_compiled_engine_heals_broken_selector(monkeypatch):
+    # Stored selector misses; reheal returns a working one (no DB persistence
+    # because workflow_id is None in this test).
+    async def fake_reheal(page, *, mode, root, field):
+        return [".card .title"]
+
+    monkeypatch.setattr(selector_compiler, "reheal", fake_reheal)
+    html = "<div class='card'><h3 class='title'>Physics 101</h3></div>"
+    snapshot = {
+        "steps": [
+            {"i": 0, "type": "goto", "url": f"data:text/html,{quote(html)}"},
+            {"i": 1, "type": "extract", "ref": "main"},
+        ],
+        "extraction": {
+            "main": {
+                "mode": "single",
+                "engine": "compiled",
+                "fields": [{"name": "title", "selectors": [".stale-selector"], "take": "text"}],
+            }
+        },
+    }
+    result = await replay_workflow(snapshot, {}, None, uuid.uuid4())
+    assert result["data"]["title"] == "Physics 101"
