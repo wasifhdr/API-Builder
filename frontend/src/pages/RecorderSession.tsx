@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { Link, useNavigate, useParams } from 'react-router-dom'
+import { Link, Navigate, useNavigate, useParams } from 'react-router-dom'
 import AppShell from '../components/AppShell'
 import ExtractionEditor from '../components/ExtractionEditor'
 import RecorderPipCard from '../components/RecorderPipCard'
@@ -103,22 +103,9 @@ export default function RecorderSession() {
     dismissExtractionFieldSuggestion(selector)
   }
 
+  // Skip the "Workflow saved" interstitial — go straight to the workflow's page.
   if (saved) {
-    return (
-      <AppShell>
-        <div className="mx-auto max-w-md text-center">
-          <p className="font-display text-display-sm">Workflow saved.</p>
-          <div className="mt-6 flex items-center justify-center gap-3">
-            <Button variant="primary" onClick={() => navigate(`/workflows/${workflowId}/edit`)}>
-              Edit workflow
-            </Button>
-            <Button variant="ghost" onClick={() => navigate('/dashboard')}>
-              Back to dashboard
-            </Button>
-          </div>
-        </div>
-      </AppShell>
-    )
+    return <Navigate to={`/workflows/${workflowId}/edit`} replace />
   }
 
   return (

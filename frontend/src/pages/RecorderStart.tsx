@@ -2,6 +2,7 @@ import { type FormEvent, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import AppShell from '../components/AppShell'
 import { Button, buttonClasses, CapsLabel, cardClasses, FieldLabel, Input } from '../components/ui'
+import { openPipWindow } from '../hooks/usePipWindow'
 import { api, ApiError } from '../lib/api'
 
 export default function RecorderStart() {
@@ -29,6 +30,13 @@ export default function RecorderStart() {
     }
     setStartUrl(normalizedUrl)
 
+    // Pop the floating controls open now, while this click still counts as a
+    // user gesture and Chrome still has focus. The recorder's Chromium window
+    // launches seconds later on the next page and comes up beside these
+    // controls, so the user never has to click back here to open them. The
+    // recorder page (usePipWindow) adopts this window on arrival.
+    await openPipWindow(380, 560).catch(() => null)
+
     setSubmitting(true)
     try {
       const { workflow_id } = await api.post<{ workflow_id: string }>('/recordings', {
@@ -37,6 +45,8 @@ export default function RecorderStart() {
       })
       navigate(`/recorder/${workflow_id}`)
     } catch (err) {
+      // Starting failed — don't leave an empty floating window behind.
+      window.documentPictureInPicture?.window?.close()
       if (err instanceof ApiError && err.status === 429) {
         setError('Daily API creation limit reached. Upgrade your plan or try again tomorrow.')
       } else {

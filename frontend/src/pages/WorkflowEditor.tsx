@@ -169,8 +169,11 @@ export default function WorkflowEditor() {
 
   return (
     <AppShell>
-      <Link to="/dashboard" className={buttonClasses('ghost', 'sm', 'mb-4')}>
-        &larr; Dashboard
+      <Link
+        to={isPublished ? `/apis/${workflow.published_api_id}` : '/dashboard'}
+        className={buttonClasses('ghost', 'sm', 'mb-4')}
+      >
+        &larr; {isPublished ? 'API' : 'Dashboard'}
       </Link>
       <PageHeader
         eyebrow={<CapsLabel>Workflow</CapsLabel>}
