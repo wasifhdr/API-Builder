@@ -306,6 +306,51 @@ async def test_compiled_engine_uses_stored_selectors(monkeypatch):
     assert result["data"]["title"] == "Physics 101"
 
 
+async def test_compiled_list_floor_normalizes_root_from_roots(monkeypatch):
+    # List-mode compiled configs only carry the plural "roots" key. The
+    # last-resort semantic_extract floor (via _semantic_list) bails out with
+    # `if not config.get("root"): return None`, so without normalization the
+    # floor silently never runs for list-mode compiled workflows. Prove the
+    # floor is called with a config that has "root" populated from roots[0].
+    async def fake_reheal(page, *, mode, root, field):
+        return None  # reheal can't fix it either → selector stays null → floor must run
+
+    monkeypatch.setattr(selector_compiler, "reheal", fake_reheal)
+
+    import app.recorder.replay as replay_mod
+
+    captured: list[dict] = []
+
+    async def fake_semantic_extract(page, config):
+        captured.append(config)
+        return None
+
+    monkeypatch.setattr(replay_mod, "semantic_extract", fake_semantic_extract)
+
+    html = (
+        "<div class='card'><h3 class='title'>Alpha</h3></div>"
+        "<div class='card'><h3 class='title'>Beta</h3></div>"
+    )
+    snapshot = {
+        "steps": [
+            {"i": 0, "type": "goto", "url": f"data:text/html,{quote(html)}"},
+            {"i": 1, "type": "extract", "ref": "main"},
+        ],
+        "extraction": {
+            "main": {
+                "mode": "list",
+                "engine": "compiled",
+                "roots": [".card"],
+                "fields": [{"name": "title", "selectors": [".missing-selector"], "take": "text"}],
+            }
+        },
+    }
+    await replay_workflow(snapshot, {}, None, uuid.uuid4())
+
+    assert len(captured) == 1
+    assert captured[0]["root"] == ".card"
+
+
 async def test_compiled_engine_heals_broken_selector(monkeypatch):
     # Stored selector misses; reheal returns a working one (no DB persistence
     # because workflow_id is None in this test).

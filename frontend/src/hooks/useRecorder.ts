@@ -92,6 +92,8 @@ export function useRecorder(workflowId: string) {
             ...s,
             wizardRoots: msg.roots ?? [],
             wizardStep: 'choose-values',
+            pickResult: null,
+            lastCompiled: null,
           }))
           break
         case 'field_compiled':

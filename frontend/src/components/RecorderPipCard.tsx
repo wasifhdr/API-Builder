@@ -49,7 +49,7 @@ export default function RecorderPipCard({
         <Button variant="default" size="sm" onClick={onRecord} disabled={!interactive}>
           Record
         </Button>
-        <ExtractionWizard {...wizard} disabled={!interactive} />
+        <ExtractionWizard {...wizard} />
       </div>
 
       <RecorderStepList

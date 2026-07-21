@@ -30,6 +30,13 @@ export default function ExtractionWizard({
   const [description, setDescription] = useState('')
   const [take, setTake] = useState('text')
 
+  function handleUndo() {
+    onUndoPick()
+    setName('')
+    setDescription('')
+    setTake('text')
+  }
+
   if (step === 'idle') {
     return (
       <Button variant="ink" size="sm" onClick={onStart} disabled={disabled}>
@@ -59,7 +66,7 @@ export default function ExtractionWizard({
               <p className="text-xs text-ink/60">{pickResult.count} similar element(s)</p>
               <div className="flex gap-2">
                 <Button variant="ink" size="sm" onClick={onConfirmRoot}>Use as root</Button>
-                <Button size="sm" onClick={onUndoPick}>Undo pick</Button>
+                <Button size="sm" onClick={handleUndo}>Undo pick</Button>
               </div>
             </>
           )}
@@ -112,7 +119,7 @@ export default function ExtractionWizard({
                     Compile selector
                   </Button>
                 )}
-                <Button size="sm" onClick={onUndoPick}>Undo pick</Button>
+                <Button size="sm" onClick={handleUndo}>Undo pick</Button>
               </div>
               {lastCompiled && (
                 <p className="truncate font-mono text-[11px] text-ink/60">{lastCompiled.selectors[0]}</p>

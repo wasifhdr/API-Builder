@@ -87,7 +87,7 @@ async def _extract_compiled(
     Never raises."""
     fields = config.get("fields") or []
     mode = config.get("mode", "single")
-    root = (config.get("roots") or [None])[0] if config.get("roots") else config.get("root")
+    root = config.get("roots")[0] if config.get("roots") else config.get("root")
 
     # 1. Overlay cached (previously-healed) selectors on top of the authored ones.
     if workflow_id is not None:
@@ -142,7 +142,8 @@ async def _extract_compiled(
     #    null-safe (never overwrites a value a selector already produced), since
     #    semantic_extract returns null for text-ineligible/absent fields.
     if _has_null(data, fields):
-        floor = await semantic_extract(page, config)
+        floor_config = config if mode != "list" else {**config, "root": config.get("root") or root}
+        floor = await semantic_extract(page, floor_config)
         if isinstance(floor, dict) and isinstance(data, dict):
             for k, v in floor.items():
                 if data.get(k) is None and v is not None:
