@@ -287,8 +287,16 @@ class RecordingSession:
         await self._publish({"t": "step_recorded", "step": self.steps[-1]})
 
     async def _heartbeat_loop(self) -> None:
+        # A transient Redis blip (e.g. Docker Desktop dropping a pooled
+        # connection) must not kill the heartbeat — a dead heartbeat lets the
+        # alive-key TTL lapse and the client reports "RECORDER CRASHED" over a
+        # still-live session. Swallow and retry on the next beat; the 15s TTL
+        # survives two consecutive misses at the 5s interval.
         while True:
-            await self.redis.set(self.alive_key, "1", ex=HEARTBEAT_TTL_SECONDS)
+            try:
+                await self.redis.set(self.alive_key, "1", ex=HEARTBEAT_TTL_SECONDS)
+            except Exception:
+                log.warning("heartbeat set failed (transient redis error); retrying next beat")
             await asyncio.sleep(HEARTBEAT_INTERVAL_SECONDS)
 
     async def _watchdog_loop(self) -> None:
