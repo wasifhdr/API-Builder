@@ -106,12 +106,20 @@ class RecordingSession:
                     await self._run_in_context(context, workflow.start_url)
                 finally:
                     await context.close()
+            # Announce the clean end (publishes "closed") while the heartbeat
+            # alive_key is still present, so the WS bridge learns the session
+            # ended normally BEFORE the key disappears. Deleting the key first
+            # leaves a gap — the "closed" publish sits behind a DB commit in
+            # _finalize — and the WS's 3s heartbeat poll can catch that gap and
+            # report a false "RECORDER CRASHED" over a session that saved fine.
+            # On an exception the playwright block propagates past here, so
+            # _finalize is skipped and no "closed" is sent — a genuine crash
+            # still surfaces as "died", which is correct.
+            await self._finalize()
         finally:
             if is_temp:
                 shutil.rmtree(profile_dir, ignore_errors=True)
             await self.redis.delete(self.alive_key)
-
-        await self._finalize()
 
     async def _run_in_context(self, context: BrowserContext, start_url: str) -> None:
         page = context.pages[0] if context.pages else await context.new_page()

@@ -82,6 +82,67 @@ async def test_cancelled_rerecord_with_empty_extraction_goes_draft_not_ready(db,
     assert refreshed.status == WorkflowStatus.DRAFT
 
 
+async def test_finalize_publishes_closed_before_alive_key_deleted(db, make_user, monkeypatch, tmp_path):
+    # Regression: run() must finalize (which publishes the "closed" status the
+    # WS bridge waits for) BEFORE it removes the heartbeat alive_key. If the
+    # key is deleted first, the WS's 3s heartbeat poll can land in the gap
+    # before "closed" arrives (the publish sits behind _finalize's DB commit)
+    # and report a false "RECORDER CRASHED" over a session that saved cleanly.
+    owner, workflow = await _seed(db, make_user, extraction={})
+    workflow_id, owner_id = workflow.id, owner.id
+
+    order: list[str] = []
+    session = RecordingSession(str(workflow_id), str(owner_id))
+
+    # We only exercise the teardown ordering — skip the real browser/loop life
+    # cycle and record which of the two teardown steps runs first.
+    async def _fake_run_in_context(context, start_url):
+        return
+
+    async def _fake_finalize():
+        order.append("finalize")  # stands in for the "closed" publish
+
+    async def _noop_publish(event):
+        pass
+
+    monkeypatch.setattr(session, "_run_in_context", _fake_run_in_context)
+    monkeypatch.setattr(session, "_finalize", _fake_finalize)
+    monkeypatch.setattr(session, "_publish", _noop_publish)
+
+    class _FakeRedis:
+        async def delete(self, key):
+            order.append("delete_alive")
+
+    session.redis = _FakeRedis()
+
+    class _FakeContext:
+        pages: list = []
+
+        async def close(self):
+            pass
+
+    class _FakeChromium:
+        async def launch_persistent_context(self, path, **kwargs):
+            return _FakeContext()
+
+    class _FakePw:
+        chromium = _FakeChromium()
+
+    class _FakePwCM:
+        async def __aenter__(self):
+            return _FakePw()
+
+        async def __aexit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(recorder_session, "async_playwright", lambda: _FakePwCM())
+    monkeypatch.setattr(recorder_session, "get_profile_dir", lambda uid, saved: (str(tmp_path), False))
+
+    await session.run()
+
+    assert order == ["finalize", "delete_alive"], order
+
+
 async def test_cancelled_fresh_recording_still_archives(db, make_user):
     owner, workflow = await _seed(db, make_user)
     workflow_id, owner_id = workflow.id, owner.id  # read before expire_all below
