@@ -32,6 +32,14 @@ HEARTBEAT_INTERVAL_SECONDS = 5
 
 VALID_PARAM_TYPES = {"string", "integer", "number", "boolean"}
 
+# A main-frame navigation that lands within this window after a recorded
+# interaction (click / press / select) is treated as a *side effect* of that
+# interaction, not a standalone navigation, and is NOT recorded as a `goto`.
+# Replaying the interaction re-triggers the navigation on its own; recording
+# the resulting literal URL would freeze any parameter used in the interaction
+# (e.g. a search that navigates to `…/search?query=Samsung`).
+NAV_AFTER_INTERACTION_WINDOW_S = 4.0
+
 
 class RecordingSession:
     def __init__(self, workflow_id: str, user_id: str, rerecord: bool = False):
@@ -58,6 +66,10 @@ class RecordingSession:
         self._warned_iframes = False
         self._authoring_task: asyncio.Task | None = None
         self._last_pick: dict | None = None
+        # Monotonic time of the last recorded interaction (click/press/select).
+        # Used to suppress the side-effect `goto` a navigation-triggering
+        # interaction produces (see NAV_AFTER_INTERACTION_WINDOW_S).
+        self._last_interaction_at = 0.0
 
     @property
     def evt_channel(self) -> str:
@@ -150,7 +162,15 @@ class RecordingSession:
             if frame.url == last_url:
                 return
             last_url = frame.url
-            if self.steps:  # skip the initial goto — recorded explicitly below
+            # Skip the side-effect navigation an interaction produces: replaying
+            # the click/press/select re-triggers it, and recording the literal
+            # URL here would freeze any parameter the interaction carried. Only
+            # standalone navigations (no recent interaction — e.g. the user
+            # typing a URL) are recorded as an explicit `goto`.
+            after_interaction = (
+                time.monotonic() - self._last_interaction_at <= NAV_AFTER_INTERACTION_WINDOW_S
+            )
+            if self.steps and not after_interaction:  # initial goto recorded explicitly below
                 self._record_step({"type": "goto", "url": frame.url})
                 await self._publish({"t": "step_recorded", "step": self.steps[-1]})
             try:
@@ -291,6 +311,9 @@ class RecordingSession:
         step["type"] = etype
         if etype in VALUE_STEP_TYPES and "value" in step:
             step["value"] = {"literal": step["value"]}
+        # Mark interactions that can trigger navigation so the resulting
+        # main-frame nav is treated as a side effect, not a standalone `goto`.
+        self._last_interaction_at = time.monotonic()
         self._record_step(step)
         await self._publish({"t": "step_recorded", "step": self.steps[-1]})
 
