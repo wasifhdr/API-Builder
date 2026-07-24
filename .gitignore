@@ -17,8 +17,6 @@ frontend/dist/
 frontend/.vite/
 
 # large / generated / local-only
-models/*.gguf
-llama/
 data/
 
 # editors / os

@@ -8,8 +8,8 @@ verification.
 Full design: [docs/BLUEPRINT.md](docs/BLUEPRINT.md). Build order: [docs/IMPLEMENTATION_PLAN.md](docs/IMPLEMENTATION_PLAN.md).
 
 This is a single-machine app by design: everything (Postgres/Redis in Docker, FastAPI, the
-worker, Vite, and optionally a local LLM) runs on one Windows box with an NVIDIA GPU. It's not
-meant to be deployed to multiple machines.
+worker, and Vite) runs on one Windows box; the LLM is a hosted OpenAI-compatible endpoint. It's
+not meant to be deployed to multiple machines.
 
 ## Prerequisites
 
@@ -77,12 +77,12 @@ npm install
 cd ..
 ```
 
-### 5. (Optional) Local LLM
+### 5. (Optional) LLM
 
-Only needed for LLM-enriched OpenAPI descriptions — the app is fully functional without it
-(`LLM_ENABLED=false` falls back to a deterministic template). Follow
-[models/README.md](models/README.md) to get `llama/llama-server.exe` and a `.gguf` model in place,
-then run `scripts\run-llama.ps1` whenever you want it live.
+Only needed for LLM-enriched OpenAPI descriptions and smart selector compilation — the app is
+fully functional without it (`LLM_ENABLED=false` falls back to deterministic templates and the
+recorded selectors). To enable it, set `LLM_PROVIDER=gemini` and a `GEMINI_API_KEY` in `.env`
+(Google AI Studio, OpenAI-compatible endpoint); `LLM_PROVIDER=craftx` is also supported.
 
 ### 6. Run it
 
@@ -97,7 +97,6 @@ Visit **http://localhost:3000**, sign in with Google, and you're in.
 
 ```powershell
 docker compose up -d                 # postgres + redis
-scripts\run-llama.ps1                # optional local LLM
 scripts\dev.ps1                      # uvicorn + worker + vite
 cd backend; uv run pytest            # backend test suite
 cd backend; uv run ruff check app    # lint
@@ -124,9 +123,7 @@ scripts\e2e.ps1
 
 ```
 ├─ docs/            BLUEPRINT.md (design contract), IMPLEMENTATION_PLAN.md (build order)
-├─ scripts/         dev.ps1, run-llama.ps1, e2e.ps1
-├─ models/          .gguf model file (gitignored) — see models/README.md
-├─ llama/           llama-server.exe (gitignored)
+├─ scripts/         dev.ps1, e2e.ps1
 ├─ data/            profiles/ (recorder browser profiles), failures/ (replay failure artifacts)
 ├─ backend/         FastAPI app + worker (app/), tests, alembic migrations
 └─ frontend/        React + Vite + Tailwind v4

@@ -16,9 +16,8 @@ log = logging.getLogger("worker")
 QUEUES = {  # stream -> (handler, max concurrent)
     "jobs:rec": (handlers.record_session, settings.rec_max_concurrency),
     "jobs:exec": (handlers.execute_api, settings.exec_max_concurrency),
-    # Concurrency pinned to 1 regardless of hardware: llama.cpp is configured
-    # with --parallel 1, so a second concurrent generation would just queue
-    # behind the first anyway — and it keeps VRAM usage predictable (§6.1).
+    # LLM job concurrency pinned to 1 (project rule): serialize generations so
+    # the single hosted-model quota isn't fanned out across parallel requests.
     "jobs:llm": (handlers.generate_spec, 1),
 }
 

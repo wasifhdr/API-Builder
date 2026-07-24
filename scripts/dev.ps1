@@ -1,13 +1,13 @@
 # Starts the dev stack: FastAPI (reload), the worker (once it exists), and Vite.
 # Each runs in its own PowerShell window so logs stay readable.
-# Postgres/Redis (docker compose up -d) and llama-server (run-llama.ps1) are
-# started separately since they're optional/infrequently restarted.
+# Postgres/Redis (docker compose up -d) are started separately since they're
+# infrequently restarted.
 
 $root = Split-Path -Parent $PSScriptRoot
 $backend = Join-Path $root "backend"
 $frontend = Join-Path $root "frontend"
 
-Write-Host "Reminder: run 'docker compose up -d' for Postgres+Redis, and scripts\run-llama.ps1 for the local LLM (optional; app works with LLM_ENABLED=false)." -ForegroundColor Yellow
+Write-Host "Reminder: run 'docker compose up -d' for Postgres+Redis (the app works with LLM_ENABLED=false if no LLM key is configured)." -ForegroundColor Yellow
 
 # -WorkingDirectory (not an embedded `cd "$path";`) because Start-Process's
 # -ArgumentList array mangles elements that mix embedded quotes with a `;` —

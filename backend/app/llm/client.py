@@ -5,15 +5,13 @@ from openai import AsyncOpenAI
 
 from app.config import settings
 
-# Strips a reasoning block a thinking-capable model might emit even when not
-# asked to (e.g. if LLM_PROVIDER is later switched back to a thinking model).
 # Strips a reasoning block a thinking-capable model may emit even when not asked
 # to. Covers <think>, <thought>, <thinking> — Google-served Gemma wraps its
 # answer in <thought>…</thought> and often echoes the schema/example JSON INSIDE
 # it, so this must run before we hunt for the first "{".
 _THINK_BLOCK_RE = re.compile(r"<(think|thought|thinking)>.*?</\1>", re.DOTALL | re.IGNORECASE)
 # Strips a ```json ... ``` (or bare ``` ... ```) fence some instruct models
-# wrap structured output in even when response_format is honored.
+# wrap structured output in.
 _CODE_FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL | re.IGNORECASE)
 
 
@@ -25,16 +23,10 @@ def _build_client() -> AsyncOpenAI:
             timeout=180.0,
             max_retries=1,
         )
-    if settings.llm_provider == "gemini":
-        return AsyncOpenAI(
-            base_url=settings.gemini_base_url,
-            api_key=settings.gemini_api_key,
-            timeout=180.0,
-            max_retries=1,
-        )
+    # gemini (default): Google AI Studio's OpenAI-compatible endpoint.
     return AsyncOpenAI(
-        base_url=settings.llama_base_url,
-        api_key="sk-local",  # ignored by llama-server unless --api-key is set
+        base_url=settings.gemini_base_url,
+        api_key=settings.gemini_api_key,
         timeout=180.0,
         max_retries=1,
     )
@@ -44,33 +36,23 @@ client = _build_client()
 
 
 def _model_name() -> str:
-    # llama-server serves a single model, so its name is cosmetic; craftx and
-    # gemini (a Google-served Gemma/Gemini model) require the real model name.
+    # Both providers are hosted and need the real model name.
     if settings.llm_provider == "craftx":
         return settings.craftx_model
-    if settings.llm_provider == "gemini":
-        return settings.gemini_model
-    return "local"
+    return settings.gemini_model
 
 
 MODEL_NAME = _model_name()
 
 
-def _uses_prompt_schema() -> bool:
-    # craftx 502s on any response_format; Google's OpenAI-compat layer is
-    # unreliable with json_schema. Both embed the schema in the prompt and lean
-    # on _extract_json to strip the code fence / prose the model wraps it in.
-    return settings.llm_provider in ("craftx", "gemini")
-
-
 def _extract_json(content: str) -> dict:
     """Defensively pulls a JSON object out of a chat completion's content.
 
-    response_format={"type": "json_schema", ...} is honored by llama.cpp, but a
-    hosted gateway in front of a different model may ignore it — the payload can
-    arrive wrapped in a <think>...</think> block, a markdown code fence, or with
-    a sentence of prose before/after. Never assume the whole content is clean
-    JSON; always route it through here first.
+    Both providers (craftx, gemini) are asked for JSON via a prompt-embedded
+    schema, and the payload can still arrive wrapped in a <think>...</think>
+    block, a markdown code fence, or with a sentence of prose before/after.
+    Never assume the whole content is clean JSON; always route it through here
+    first.
     """
     text = _THINK_BLOCK_RE.sub("", content).strip()
 
@@ -114,17 +96,10 @@ async def complete_json(
     max_tokens: int = 2000,
     images: list[str] | None = None,
 ) -> dict:
-    kwargs: dict = {}
-    if _uses_prompt_schema():
-        user = (
-            f"{user}\n\nRespond with ONLY a JSON object matching this schema "
-            f"(no prose, no markdown fence):\n{json.dumps(schema)}"
-        )
-    else:
-        kwargs["response_format"] = {
-            "type": "json_schema",
-            "json_schema": {"name": "out", "schema": schema, "strict": True},
-        }
+    user = (
+        f"{user}\n\nRespond with ONLY a JSON object matching this schema "
+        f"(no prose, no markdown fence):\n{json.dumps(schema)}"
+    )
 
     if images:
         user_content: object = [
@@ -145,7 +120,6 @@ async def complete_json(
         ],
         temperature=0.2,
         max_tokens=max_tokens,
-        **kwargs,
     )
     if not resp.choices:
         # A WAF/gateway in front of the model can return a 200 with an error

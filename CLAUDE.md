@@ -2,8 +2,8 @@
 
 Web app that records a user's browser session (Playwright), lets them mark data to extract, and
 republishes the workflow as a parameterized JSON HTTP API with an auto-generated OpenAPI spec
-(local llama.cpp), Google OAuth, tiered subscriptions, and manual bKash payment verification.
-Single-machine deployment: Windows 11 laptop, RTX 4050 6 GB.
+(via a hosted LLM), Google OAuth, tiered subscriptions, and manual bKash payment verification.
+Single-machine deployment: Windows 11 laptop.
 
 ## Read first
 
@@ -22,13 +22,12 @@ Single-machine deployment: Windows 11 laptop, RTX 4050 6 GB.
 
 React+Vite+Tailwind v4 (:3000, proxies `/api` → :8000) · FastAPI (:8000) · custom asyncio worker
 (`python -m app.workers.main`) owning ALL Playwright + LLM jobs · Postgres 16 + Redis 7 in Docker ·
-llama-server native CUDA (:8080).
+LLM via a hosted OpenAI-compatible endpoint (Gemini by default).
 
 ## Commands
 
 ```powershell
 docker compose up -d                 # postgres + redis
-scripts\run-llama.ps1                # optional; app must work without it (LLM_ENABLED=false)
 scripts\dev.ps1                      # uvicorn + worker + vite
 cd backend; uv run pytest            # tests
 cd backend; uv run ruff check app    # lint
@@ -48,6 +47,6 @@ cd backend; uv run alembic upgrade head
   the Vite proxy** — frontend port must stay 3000, proxy must have `ws: true`.
 - Tailwind is **v4**: CSS-first (`@import "tailwindcss";` + `@tailwindcss/vite`), no
   `tailwind.config.js` — don't scaffold v3-style.
-- Headless replay browsers always launch with `--disable-gpu` (llama.cpp owns the VRAM);
+- Headless replay browsers always launch with `--disable-gpu` (keeps replay off the GPU);
   LLM job concurrency is 1; spec generation failure must never block publishing (fallback spec).
-- Secrets only via `app/config.py` / `.env` (gitignored). Never commit `.env`, `models/`, `data/`.
+- Secrets only via `app/config.py` / `.env` (gitignored). Never commit `.env` or `data/`.

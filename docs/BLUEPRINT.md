@@ -3,7 +3,7 @@
 A web app that turns manual browsing into reusable APIs: the user records a browser session
 (navigate, search, click), marks the data they want extracted, and the system saves the workflow
 as a parameterized automation that can be called as a JSON HTTP API — complete with an
-auto-generated OpenAPI spec (via a local llama.cpp model), Google login, tiered subscriptions,
+auto-generated OpenAPI spec (via a hosted LLM), Google login, tiered subscriptions,
 and manual bKash payment verification.
 
 This document is the **design contract**. The build order lives in
@@ -16,9 +16,9 @@ implementing each phase.
 
 ### 1.1 Processes on the machine
 
-Everything runs on one Windows 11 laptop (RTX 4050, 6 GB VRAM). Infra is Dockerized; all Python
-runs **natively on Windows** because (a) the recorder must open a visible browser window on the
-user's desktop, and (b) llama.cpp needs direct CUDA access.
+Everything runs on one Windows 11 laptop. Infra is Dockerized; all Python
+runs **natively on Windows** because the recorder must open a visible browser window on the
+user's desktop (Playwright can't drive a headful window from inside Docker).
 
 | Process            | Where          | Port | Role |
 |--------------------|----------------|------|------|
@@ -27,7 +27,6 @@ user's desktop, and (b) llama.cpp needs direct CUDA access.
 | Worker (`python -m app.workers.main`) | native | —    | Owns all Playwright browsers + LLM jobs. Consumes Redis Streams. |
 | PostgreSQL 16      | Docker         | 5432 | System of record |
 | Redis 7            | Docker         | 6379 | Job queues (Streams), live-session pub/sub, sessions, quotas, cache |
-| llama-server       | native (CUDA)  | 8080 | OpenAI-compatible `/v1` endpoint for spec generation |
 
 ### 1.2 Architecture diagram
 
@@ -53,7 +52,7 @@ user's desktop, and (b) llama.cpp needs direct CUDA access.
                      │    injected recorder.js, element picker        │
                      │  exec handler (max 2): headless replay,        │
                      │    --disable-gpu, storage_state auth           │
-                     │  llm handler (max 1): calls llama-server :8080 │
+                     │  llm handler (max 1): calls the hosted LLM     │
                      │  periodic: subscription expiry sweep           │
                      └────────────────────────────────────────────────┘
 ```
@@ -86,10 +85,10 @@ with the native browser window next to it. This works because everything runs on
    and at save time we snapshot `context.storage_state()` — encrypted with Fernet — onto the
    workflow. Replays inject that snapshot into a fresh headless context. Details in §4.9.
 4. **Hybrid OpenAPI generation.** The spec skeleton (paths, params, response schema, security) is
-   built **deterministically** from stored workflow data — guaranteed valid. The local LLM only
-   fills human prose (descriptions, summaries, examples) via a JSON-schema-constrained completion.
-   This keeps the LLM task small enough that even a 3B model works, and the system still ships a
-   valid spec if llama-server is down. Details in §6.
+   built **deterministically** from stored workflow data — guaranteed valid. The LLM only
+   fills human prose (descriptions, summaries, examples) via a prompt-embedded-schema completion.
+   This keeps the LLM task small and cheap, and the system still ships a
+   valid spec if the LLM is down. Details in §6.
 5. **Google OAuth redirect lands on the frontend origin but is served by FastAPI**, because Vite
    proxies `/api/*` → `:8000`. Your registered redirect URI
    `http://localhost:3000/api/auth/callback/google` therefore hits FastAPI directly, cookies are
@@ -98,8 +97,8 @@ with the native browser window next to it. This works because everything runs on
    owner's shared APIs simply stop resolving for non-owners on the next call — no cascade updates,
    self-healing on renewal.
 7. **Concurrency budget is explicit** because one laptop hosts everything: 1 recording session,
-   2 concurrent replays, 1 LLM job, headless browsers launched with `--disable-gpu` so Chromium
-   never competes with llama.cpp for VRAM.
+   2 concurrent replays, 1 LLM job, headless browsers launched with `--disable-gpu` to keep
+   replay off the GPU.
 
 ---
 
@@ -707,77 +706,48 @@ if __name__ == "__main__":
 
 ---
 
-## 6. Local LLM integration (llama.cpp)
+## 6. LLM integration (hosted)
 
-### 6.1 Serving setup & VRAM budget
+### 6.1 Provider & configuration
 
-Run the prebuilt CUDA llama.cpp release natively (`llama-bXXXX-bin-win-cuda-cu12.x-x64.zip`) —
-Docker GPU passthrough on Windows adds nothing but friction here.
+The LLM is reached over an **OpenAI-compatible HTTP endpoint** — no local model is run. Two
+providers are supported via `LLM_PROVIDER`:
 
-`scripts/run-llama.ps1`:
+- **`gemini`** (default) — Google AI Studio's OpenAI-compat endpoint (`GEMINI_BASE_URL`,
+  `GEMINI_API_KEY`, `GEMINI_MODEL`). Use a fast, non-thinking model (e.g.
+  `gemini-flash-lite-latest`); reasoning models that emit `<thought>` blocks are slow and
+  unreliable for structured output.
+- **`craftx`** — a hosted OpenAI-compatible gateway (`CRAFTX_BASE_URL`, `CRAFTX_API_KEY`,
+  `CRAFTX_MODEL`).
 
-```powershell
-& "$PSScriptRoot\..\llama\llama-server.exe" `
-  -m "$PSScriptRoot\..\models\Qwen2.5-Coder-7B-Instruct-Q4_K_M.gguf" `
-  --host 127.0.0.1 --port 8080 `
-  -ngl 99 -c 4096 --flash-attn `
-  --cache-type-k q8_0 --cache-type-v q8_0 `
-  --parallel 1 --no-webui
-# Flag spellings drift between llama.cpp releases — verify with: llama-server.exe --help
-```
-
-| Item | ~VRAM |
-|---|---|
-| Qwen2.5-Coder-7B-Instruct Q4_K_M weights, fully offloaded | ~4.5 GB |
-| KV cache, 4 K context, q8_0 | ~0.2 GB |
-| CUDA compute buffers | ~0.4 GB |
-| **Total** | **~5.1 GB of 6 GB** |
-
-This fits because on most laptops the internal display renders on the iGPU, leaving the 4050
-nearly empty — **verify with `nvidia-smi`** before choosing the model. If it OOMs: drop to
-`-ngl 28` (partial offload) or swap to `Qwen2.5-Coder-3B-Instruct-Q5_K_M` (~2.4 GB). The hybrid
-design below makes a 3B model genuinely sufficient. Model files go in `models/` (gitignored),
-downloaded from the bartowski GGUF repos on Hugging Face.
-
-VRAM coexistence rules (enforced by design, not hope):
-- `jobs:llm` concurrency = 1 and `--parallel 1` — never two generations at once.
-- All headless replay browsers launch with `--disable-gpu` (§5.2), so Chromium raster never
-  competes for VRAM. Context kept at 4 K — enrichment prompts are ~1.5 K tokens.
+Operational rules:
+- `jobs:llm` concurrency = 1 — LLM calls are serialized (one hosted quota, kept predictable).
+- All headless replay browsers launch with `--disable-gpu` (§5.2).
 - `LLM_ENABLED=false` must keep the whole product functional (fallback path, §6.4).
 
-### 6.2 Client — standard OpenAI SDK pointed at llama-server
+### 6.2 Client — OpenAI SDK pointed at the hosted endpoint
+
+`app/llm/client.py` builds an `AsyncOpenAI` client for the configured provider and exposes
+`complete_json(system, user, schema, max_tokens, images=None)`. Both providers are unreliable with
+`response_format` json_schema, so the schema is **embedded in the prompt** and the response is
+defensively parsed by `_extract_json` (strips `<think>/<thought>/<thinking>` reasoning blocks and
+markdown code fences, then extracts the first balanced JSON object). `images` carries a base64
+screenshot part for the multimodal selector compiler.
 
 ```python
-# app/llm/client.py
-import json
-from openai import AsyncOpenAI
-from app.config import settings
+# app/llm/client.py (shape)
+client = _build_client()   # craftx | gemini (default), pointed at an OpenAI-compatible /v1
 
-client = AsyncOpenAI(
-    base_url=settings.llama_base_url,   # http://127.0.0.1:8080/v1
-    api_key="sk-local",                 # ignored by llama-server unless --api-key is set
-    timeout=180.0,
-    max_retries=1,
-)
-
-async def complete_json(system: str, user: str, schema: dict, max_tokens: int = 1200) -> dict:
+async def complete_json(system, user, schema, max_tokens=2000, images=None) -> dict:
+    user += "\n\nRespond with ONLY a JSON object matching this schema ...\n" + json.dumps(schema)
     resp = await client.chat.completions.create(
-        model="local",                  # llama-server serves one model; the name is cosmetic
-        messages=[{"role": "system", "content": system},
-                  {"role": "user", "content": user}],
-        temperature=0.2,
-        max_tokens=max_tokens,
-        response_format={
-            "type": "json_schema",
-            "json_schema": {"name": "out", "schema": schema, "strict": True},
-        },
-    )
-    return json.loads(resp.choices[0].message.content)
+        model=MODEL_NAME, messages=[...], temperature=0.2, max_tokens=max_tokens)
+    return _extract_json(resp.choices[0].message.content)
 ```
 
-llama-server compiles the JSON schema to a GBNF grammar, so the output is **structurally guaranteed**
-— the model cannot produce malformed JSON or unknown keys. (Very old llama.cpp builds only accept
-`{"type":"json_object","schema":...}`; pin a 2025+ release.)
+Because a hosted gateway may still wrap or prefix the JSON, output is **not** structurally
+guaranteed the way a local grammar-constrained server would be — `_extract_json` plus the spec
+validator + retry (§6.3) are what keep malformed output from shipping.
 
 ### 6.3 Hybrid spec generation (`jobs:llm` handler)
 
@@ -811,7 +781,7 @@ llama-server compiles the JSON schema to a GBNF grammar, so the output is **stru
 
 ### 6.4 Fallback & status
 
-Any failure after the retry — llama-server down, timeout, still-invalid merge — ships the
+Any failure after the retry — the LLM gateway down, timeout, still-invalid merge — ships the
 **skeleton with template prose** ("Runs the '<name>' workflow against <domain> and returns the
 extracted data as JSON."), sets `spec_status=ready` with `x-llm-enriched: false` in the spec, and
 logs. Spec generation must never block publishing. A "Regenerate docs" button re-enqueues the job.
@@ -1002,7 +972,9 @@ PLAN_PRICE_PRO_BDT=100
 PLAN_PRICE_MAX_BDT=500
 QUOTA_TZ=Asia/Dhaka
 # llm
-LLAMA_BASE_URL=http://127.0.0.1:8080/v1
+LLM_PROVIDER=gemini
+GEMINI_API_KEY=your-aistudio-key
+GEMINI_MODEL=gemini-flash-lite-latest
 LLM_ENABLED=true
 # worker
 REC_MAX_CONCURRENCY=1
@@ -1030,12 +1002,10 @@ requires it as its default HTTP transport for fetching Google's signing certs.
 ```
 API Builder V3/
 ├─ docker-compose.yml
-├─ .env  .env.example  .gitignore          # ignore: .env, models/, data/, llama/, node_modules, __pycache__
+├─ .env  .env.example  .gitignore          # ignore: .env, data/, node_modules, __pycache__
 ├─ CLAUDE.md
 ├─ docs/            BLUEPRINT.md  IMPLEMENTATION_PLAN.md
-├─ scripts/         dev.ps1  run-llama.ps1
-├─ models/          *.gguf                  (gitignored)
-├─ llama/           llama-server.exe etc.   (gitignored)
+├─ scripts/         dev.ps1  e2e.ps1
 ├─ data/            profiles/  failures/    (gitignored)
 ├─ backend/
 │  ├─ pyproject.toml  alembic.ini  alembic/versions/

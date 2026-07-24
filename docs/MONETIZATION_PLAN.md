@@ -35,8 +35,8 @@ all:
 
 - **Platform tiers gate `daily_creation_limit`** (how many APIs you *build*). But building is a
   one-time act — the recurring charge doesn't map to recurring value.
-- **API *calls* are unpriced.** Every call runs a headless Playwright replay on a single RTX 4050
-  (6 GB, shared with llama.cpp, concurrency 1). Once an invitee holds a grant they call
+- **API *calls* are unpriced.** Every call runs a headless Playwright replay on one laptop
+  (concurrency 1). Once an invitee holds a grant they call
   **unlimited times for a one-time fee** — unbounded compute cost on one laptop, borne by the
   owner. Calls are the scarce, expensive, valuable resource.
 - **Every money movement needs manual bKash verification.** Both `SUBSCRIPTION` and `API_ACCESS`

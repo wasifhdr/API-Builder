@@ -21,16 +21,15 @@ Global rules:
 
 **Blueprint:** §1, §13, §14
 
-- [ ] `git init` + `.gitignore` (`.env`, `models/`, `llama/`, `data/`, `node_modules/`,
-      `__pycache__/`, `.venv/`, `*.gguf`, `frontend/dist/`)
+- [ ] `git init` + `.gitignore` (`.env`, `data/`, `node_modules/`,
+      `__pycache__/`, `.venv/`, `frontend/dist/`)
 - [ ] `docker-compose.yml` (postgres:16 + redis:7-alpine per §13), `.env.example` (full listing §13)
 - [ ] `backend/` with `uv` project (deps list §13), `app/config.py`, `app/main.py` with
       `GET /api/health` → `{status, db, redis}` (actually pings both)
 - [ ] `frontend/` Vite + React + TS + Tailwind v4 (`@tailwindcss/vite`; port 3000; proxy per §7 —
       Tailwind v4 is CSS-first: no `tailwind.config.js`, just `@import "tailwindcss";`)
 - [ ] `scripts/dev.ps1` — starts uvicorn (reload), worker placeholder, and `npm run dev`, each in
-      its own window; prints reminder to run `docker compose up -d` and `run-llama.ps1`
-- [ ] `scripts/run-llama.ps1` (§6.1) + `models/README.md` with the exact HF download links
+      its own window; prints reminder to run `docker compose up -d`
 - [ ] `python -m playwright install chromium`
 
 **Accept:** `docker compose up -d` then `dev.ps1`; browsing to `http://localhost:3000/api/health`
@@ -138,7 +137,7 @@ JSON; second call with `cache_ttl>0` returns `meta.cached=true`; a bogus selecto
       with a mocked client; fallback path with client raising
 
 **Accept:** publishing generates a spec that passes `openapi-spec-validator`; docs page renders and
-"try it" works against `/v1/run/{slug}`; with llama-server **stopped**, publishing still yields a
+"try it" works against `/v1/run/{slug}`; with `LLM_ENABLED=false`, publishing still yields a
 valid (template-prose) spec.
 
 ## Phase 7 — Billing (bKash) & subscription lifecycle
@@ -181,7 +180,7 @@ free → grantee calls return 403; renewal restores access with no data changes.
       publish → execute → assert JSON
 - [ ] Result-size truncation, execution-log retention (keep last 200/API), failure-artifact GC
 - [ ] Nicer errors: recorder warnings for iframes/popups (§15), 429 payloads with reset time
-- [ ] README.md: setup from clean clone (docker, uv, playwright install, llama download, .env)
+- [ ] README.md: setup from clean clone (docker, uv, playwright install, .env)
 
 ---
 
@@ -192,5 +191,5 @@ free → grantee calls return 403; renewal restores access with no data changes.
 - Replay/extraction tests run against `tests/fixtures/site/` (static HTML with a search form +
   result list, including one page whose "primary" selector is missing so candidate fallback is
   exercised) served by a session-scoped local HTTP server fixture. No external-network tests.
-- LLM calls are mocked in tests; one optional `@pytest.mark.llm` integration test hits a running
-  llama-server.
+- LLM calls are mocked in tests; one optional `@pytest.mark.llm` integration test hits the
+  configured hosted LLM.

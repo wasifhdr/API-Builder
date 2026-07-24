@@ -40,13 +40,12 @@ class Settings(BaseSettings):
     # Debug aids for replay: set REPLAY_HEADLESS=false to watch the Chromium
     # window drive the workflow live, and REPLAY_SLOW_MO_MS to slow each action
     # down so you can see which step drifts. Keep headless in normal operation
-    # (llama.cpp owns the VRAM; headful contends for the desktop).
+    # (headful contends for the Windows desktop).
     replay_headless: bool = True
     replay_slow_mo_ms: int = 0
 
-    llama_base_url: str = "http://127.0.0.1:8080/v1"
     llm_enabled: bool = True
-    llm_provider: str = "llama"
+    llm_provider: str = "gemini"
     craftx_base_url: str = ""
     craftx_api_key: str = ""
     craftx_model: str = ""

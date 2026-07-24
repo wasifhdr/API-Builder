@@ -3,7 +3,7 @@
 The deterministic extractor (extraction.py) uses one rigid CSS selector per
 field. When list items differ in shape, a selector matches some items and
 misses others, leaving null fields. This module fills those gaps with the
-configured LLM (local llama or a remote gateway via LLM_PROVIDER).
+configured LLM (a hosted gateway via LLM_PROVIDER).
 
 Design:
 - Only runs when the LLM is enabled AND some field is null (pure fallback —
@@ -26,10 +26,9 @@ from app.llm.client import complete_json
 
 log = logging.getLogger("llm")
 
-# Serialize fallback calls so concurrent replays don't fan out onto a
-# single-GPU llama-server (LLM concurrency is 1 by project rule). A remote
-# gateway tolerates more, but occasional extraction fallback is cheap to
-# serialize either way.
+# Serialize fallback calls: LLM job concurrency is 1 by project rule, and the
+# hosted gateway is happier not fanned out; occasional extraction fallback is
+# cheap to serialize either way.
 _LLM_LOCK = asyncio.Semaphore(1)
 
 MAX_ITEMS = 40  # cap tokens on very long lists

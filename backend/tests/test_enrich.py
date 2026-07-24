@@ -47,7 +47,7 @@ async def test_enrich_retries_once_then_raises(monkeypatch, sample_spec):
     async def failing_complete_json(system, user, schema, max_tokens=1200):
         nonlocal call_count
         call_count += 1
-        raise RuntimeError("llama-server unreachable")
+        raise RuntimeError("LLM gateway unreachable")
 
     monkeypatch.setattr(enrich_module, "complete_json", failing_complete_json)
 
