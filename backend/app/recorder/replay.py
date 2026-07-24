@@ -18,6 +18,11 @@ log = logging.getLogger("recorder")
 # replay without needing a full re-record.
 SELECTOR_ATTEMPT_TIMEOUTS_MS = [10_000, 5_000, 5_000]
 
+# Fixed dwell after every page load (initial navigation and any load triggered
+# by a click/press) before we begin interacting with the new page. Gives
+# heavy/SPA pages time to settle so selectors resolve against the final DOM.
+POST_NAV_WAIT_MS = 5_000
+
 DEFAULT_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
@@ -267,9 +272,35 @@ async def replay_workflow(
         context.set_default_timeout(10_000)
         page = await context.new_page()
 
+        # Track main-frame navigations so we can dwell POST_NAV_WAIT_MS after
+        # every page load — the initial goto and any load a click/press kicks
+        # off — BEFORE we begin the next interaction step. The dwell runs ahead
+        # of _locate so late-rendering elements get the settle time before the
+        # visibility wait even starts (they were failing "none of the candidate
+        # selectors matched" because _locate gave up before they appeared).
+        nav = {"pending": False}
+
+        def _on_framenavigated(frame) -> None:
+            if frame.parent_frame is None:  # main frame only
+                nav["pending"] = True
+
+        page.on("framenavigated", _on_framenavigated)
+
+        async def _settle_after_nav() -> None:
+            if nav["pending"]:
+                nav["pending"] = False
+                await page.wait_for_timeout(POST_NAV_WAIT_MS)
+
         try:
             for step in steps:
                 stype = step.get("type")
+
+                # Dwell after any page load before beginning the next
+                # interaction, so late-rendering content has settled before we
+                # wait for / act on it. (goto does its own load wait; the dwell
+                # for it lands here, ahead of the first interaction.)
+                if stype != "goto":
+                    await _settle_after_nav()
 
                 if stype == "goto":
                     await page.goto(step["url"], wait_until="domcontentloaded")
