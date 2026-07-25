@@ -33,6 +33,7 @@ export default function RecorderSession() {
     wizardMode,
     wizardFields,
     lastCompiled,
+    compiling,
     undoStep,
     bringToFront,
     setMode,
@@ -43,6 +44,7 @@ export default function RecorderSession() {
     dismissParameterSuggestion,
     dismissExtractionFieldSuggestion,
     save,
+    endSession,
     cancel,
     startWizard,
     chooseWizardMode,
@@ -54,6 +56,11 @@ export default function RecorderSession() {
     cancelWizard,
   } = useRecorder(workflowId!)
   const interactive = status === 'ready'
+  // The session ended cleanly (finished from the floating controls, or the user
+  // closed the browser window). The worker already persisted everything, so
+  // there's nothing left to send — Save from here just confirms the review and
+  // moves on to the API.
+  const sessionEnded = status === 'closed'
 
   const wizardProps = {
     step: wizardStep,
@@ -61,6 +68,7 @@ export default function RecorderSession() {
     fields: wizardFields,
     pickResult,
     lastCompiled,
+    compiling,
     disabled: !interactive,
     onStart: startWizard,
     onChooseMode: chooseWizardMode,
@@ -136,8 +144,14 @@ export default function RecorderSession() {
       </div>
 
       <p className="mb-4 text-sm text-ink/70">
-        A Chromium window opened on your desktop — browse there and steps will appear here live.
-        {pipSupported && ' Pop out the controls to keep them floating above that window.'}
+        {sessionEnded
+          ? 'Recording finished and the browser closed. Review the steps below, then save to continue to the API.'
+          : (
+            <>
+              A Chromium window opened on your desktop — browse there and steps will appear here live.
+              {pipSupported && ' Pop out the controls to keep them floating above that window.'}
+            </>
+          )}
       </p>
       {error && <p className="mb-4 text-sm font-medium text-red-deep">{error}</p>}
       {warnings.map((w, i) => (
@@ -146,7 +160,8 @@ export default function RecorderSession() {
         </div>
       ))}
 
-      {!interactive && (
+      {/* A finished session isn't stuck — don't offer the escape hatch for one. */}
+      {!interactive && !sessionEnded && (
         <div className={`${cardClasses({ variant: 'callout', accent: 'gold' })} mb-4 flex flex-wrap items-center justify-between gap-3`}>
           <p className="text-sm text-ink/80">
             {status === 'died'
@@ -225,7 +240,9 @@ export default function RecorderSession() {
 
       <section className="mb-8">
         <h2 className="text-h2 mb-2">Extraction</h2>
-        <ExtractionEditor extraction={extraction} onChange={updateExtraction} />
+        {/* Edits travel to the worker over the WS, so they're read-only once
+            the session is over — the recorded config is what got persisted. */}
+        <ExtractionEditor extraction={extraction} onChange={updateExtraction} disabled={!interactive} />
         <div className="mt-3 flex items-center gap-3">
           <Button
             variant="ink"
@@ -280,7 +297,11 @@ export default function RecorderSession() {
       </section>
 
       <div className="flex items-center gap-3">
-        <Button variant="primary" onClick={save} disabled={!interactive || steps.length === 0}>
+        <Button
+          variant="primary"
+          onClick={sessionEnded ? () => navigate(`/workflows/${workflowId}/edit`) : save}
+          disabled={steps.length === 0 || (!interactive && !sessionEnded)}
+        >
           Save
         </Button>
         <Button variant="danger-ghost" onClick={cancel} disabled={!interactive}>
@@ -298,7 +319,7 @@ export default function RecorderSession() {
             onRecord={() => setMode('record')}
             onUndo={undoStep}
             onMarkParam={markParam}
-            onSave={save}
+            onFinish={endSession}
             onCancel={cancel}
           />,
           pipWindow.document.body,

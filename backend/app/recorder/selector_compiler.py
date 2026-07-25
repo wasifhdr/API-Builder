@@ -59,10 +59,19 @@ def _outline_text(outline: list[dict]) -> str:
     return "\n".join(lines)
 
 
-async def _screenshot_b64(page: Page, rect: dict | None) -> list[str]:
-    if not rect or rect.get("width", 0) <= 0 or rect.get("height", 0) <= 0:
-        return []
+async def _dim_busy_shield(page: Page) -> None:
+    """Dims the recorder's window lock, which goes up invisible so it can't tint
+    the screenshot below. No-op off the recorder (replay pages lack the shield)."""
     try:
+        await page.evaluate("() => window.__abDimBusyShield && window.__abDimBusyShield()")
+    except Exception:
+        pass
+
+
+async def _screenshot_b64(page: Page, rect: dict | None) -> list[str]:
+    try:
+        if not rect or rect.get("width", 0) <= 0 or rect.get("height", 0) <= 0:
+            return []
         clip = {
             "x": max(0, float(rect["x"])),
             "y": max(0, float(rect["y"])),
@@ -74,6 +83,8 @@ async def _screenshot_b64(page: Page, rect: dict | None) -> list[str]:
     except Exception as exc:
         log.warning("selector-compiler screenshot failed: %s", exc)
         return []
+    finally:
+        await _dim_busy_shield(page)
 
 
 async def _validate_single(page: Page, pick_id: str, selector: str) -> bool:

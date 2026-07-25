@@ -8,6 +8,9 @@ interface ExtractionWizardProps {
   fields: ExtractionField[]
   pickResult: PickCandidate | null
   lastCompiled: CompiledField | null
+  /** A compile is in flight: the worker has locked the recorder window, so the
+   * wizard shows progress and refuses further input until the reply lands. */
+  compiling: boolean
   disabled: boolean
   onStart: () => void
   onChooseMode: (mode: 'single' | 'list') => void
@@ -22,7 +25,7 @@ interface ExtractionWizardProps {
 const TAKES = ['text', 'attr:href', 'attr:src', 'html']
 
 export default function ExtractionWizard({
-  step, mode, fields, pickResult, lastCompiled, disabled,
+  step, mode, fields, pickResult, lastCompiled, compiling, disabled,
   onStart, onChooseMode, onConfirmRoot, onCompileValue, onAddField,
   onUndoPick, onFinish, onCancel,
 }: ExtractionWizardProps) {
@@ -65,8 +68,10 @@ export default function ExtractionWizard({
               <p className="truncate font-mono text-xs text-ink/80">{pickResult.selectors[0]}</p>
               <p className="text-xs text-ink/60">{pickResult.count} similar element(s)</p>
               <div className="flex gap-2">
-                <Button variant="ink" size="sm" onClick={onConfirmRoot}>Use as root</Button>
-                <Button size="sm" onClick={handleUndo}>Undo pick</Button>
+                <Button variant="ink" size="sm" disabled={disabled || compiling} onClick={onConfirmRoot}>
+                  {compiling ? 'Compiling…' : 'Use as root'}
+                </Button>
+                <Button size="sm" disabled={compiling} onClick={handleUndo}>Undo pick</Button>
               </div>
             </>
           )}
@@ -91,19 +96,19 @@ export default function ExtractionWizard({
                 Picked{pickResult.preview ? `: "${pickResult.preview.slice(0, 40)}"` : ''}
               </p>
               <input
-                type="text" value={name} disabled={disabled}
+                type="text" value={name} disabled={disabled || compiling}
                 placeholder="field name, e.g. price"
                 onChange={(e) => setName(e.target.value)}
                 className="w-full rounded border border-sand bg-cream px-2 py-1 text-xs"
               />
               <input
-                type="text" value={description} disabled={disabled}
+                type="text" value={description} disabled={disabled || compiling}
                 placeholder="what it is, e.g. nightly price in BDT"
                 onChange={(e) => setDescription(e.target.value)}
                 className="w-full rounded border border-sand bg-cream px-2 py-1 text-xs"
               />
               <select
-                value={take} disabled={disabled}
+                value={take} disabled={disabled || compiling}
                 onChange={(e) => setTake(e.target.value)}
                 className="w-full rounded border border-sand bg-cream px-2 py-1 text-xs"
               >
@@ -115,11 +120,15 @@ export default function ExtractionWizard({
                     Add this value
                   </Button>
                 ) : (
-                  <Button variant="ink" size="sm" disabled={disabled || !name} onClick={() => onCompileValue(name, description, take)}>
-                    Compile selector
+                  <Button
+                    variant="ink" size="sm"
+                    disabled={disabled || compiling || !name}
+                    onClick={() => onCompileValue(name, description, take)}
+                  >
+                    {compiling ? 'Compiling…' : 'Compile selector'}
                   </Button>
                 )}
-                <Button size="sm" onClick={handleUndo}>Undo pick</Button>
+                <Button size="sm" disabled={compiling} onClick={handleUndo}>Undo pick</Button>
               </div>
               {lastCompiled && (
                 <p className="truncate font-mono text-[11px] text-ink/60">{lastCompiled.selectors[0]}</p>
@@ -127,7 +136,7 @@ export default function ExtractionWizard({
             </div>
           )}
           <div className="flex gap-2 border-t border-sand pt-2">
-            <Button variant="primary" size="sm" disabled={fields.length === 0} onClick={onFinish}>Done</Button>
+            <Button variant="primary" size="sm" disabled={fields.length === 0 || compiling} onClick={onFinish}>Done</Button>
             <Button variant="danger-ghost" size="sm" onClick={onCancel}>Cancel</Button>
           </div>
         </div>

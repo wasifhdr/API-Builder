@@ -3,7 +3,9 @@
   window.__abInjected = true;
 
   window.__abMode = 'record';
+  window.__abBusy = false;
   let overlayEl = null;
+  let busyEl = null;
 
   function hideOverlay() {
     if (overlayEl) overlayEl.style.display = 'none';
@@ -13,6 +15,70 @@
     window.__abMode = mode;
     if (mode !== 'pick') hideOverlay();
   };
+
+  // --- busy lock: the window is frozen while the worker runs a compile ---
+  //
+  // Compiling a selector is a multi-second LLM round-trip against a snapshot of
+  // the current DOM. Anything the user does meanwhile either lands in the step
+  // list as an interaction they didn't mean to record, or navigates/mutates the
+  // page out from under the compiler so the returned selector no longer
+  // matches. A full-viewport shield swallows pointer events before the page
+  // sees them; keys are cancelled in the capture phase.
+
+  function ensureBusyShield() {
+    if (busyEl) return busyEl;
+    busyEl = document.createElement('div');
+    busyEl.style.position = 'fixed';
+    busyEl.style.inset = '0';
+    busyEl.style.zIndex = '2147483647';
+    busyEl.style.cursor = 'wait';
+    busyEl.style.background = 'rgba(17, 17, 17, 0.25)';
+    busyEl.style.transition = 'opacity 150ms ease';
+    busyEl.style.display = 'none';
+    busyEl.style.alignItems = 'flex-start';
+    busyEl.style.justifyContent = 'center';
+    const label = document.createElement('div');
+    label.textContent = 'Compiling selector — the page is locked for a moment…';
+    label.style.margin = '16px';
+    label.style.padding = '8px 14px';
+    label.style.borderRadius = '999px';
+    label.style.background = '#111';
+    label.style.color = '#fff';
+    label.style.font = '13px/1.4 system-ui, sans-serif';
+    busyEl.appendChild(label);
+    document.documentElement.appendChild(busyEl);
+    return busyEl;
+  }
+
+  // The shield goes up invisible and only dims once the compiler has taken its
+  // screenshot of the picked element — dimming first would tint the very image
+  // the model reasons about. opacity (not display/visibility) so the shield is
+  // hit-testable the whole time: it swallows clicks while still invisible.
+  window.__abDimBusyShield = () => {
+    if (busyEl) busyEl.style.opacity = '1';
+  };
+
+  window.__abSetBusy = (busy) => {
+    window.__abBusy = !!busy;
+    const shield = ensureBusyShield();
+    shield.style.opacity = '0';
+    shield.style.display = window.__abBusy ? 'flex' : 'none';
+    if (window.__abBusy) {
+      hideOverlay();
+      // The shield only stops the mouse; a focused input would still take keys.
+      if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+    }
+  };
+
+  // passive:false — wheel/touch listeners on document default to passive, and a
+  // passive listener can't preventDefault, so the page would still scroll.
+  for (const type of ['keydown', 'keypress', 'keyup', 'wheel', 'touchstart', 'contextmenu']) {
+    document.addEventListener(type, (e) => {
+      if (!window.__abBusy) return;
+      e.preventDefault();
+      e.stopPropagation();
+    }, { capture: true, passive: false });
+  }
 
   // Looks generated: hex/uuid-ish or purely numeric ids, e.g. "a1b2c3d4" or
   // "3f9e8d7c-....". Real app ids ("search-input") pass through untouched.
@@ -99,15 +165,28 @@
 
   const fillTimers = new WeakMap();
 
+  // Pressing Enter in a form field implicitly submits the form, and the browser
+  // fires a synthetic click on the default submit button (sites that intercept
+  // Enter and call `button.click()` themselves produce the same thing). That
+  // click is the *activation* of the Enter press, not a second interaction:
+  // recording both makes replay run the search twice, and the replayed click
+  // lands on the results page where the button is gone or means something else.
+  // Such clicks carry no pointer (detail 0, screen coords 0), so a
+  // keyboard-driven click shortly after a recorded Enter press is dropped.
+  const KEY_ACTIVATION_WINDOW_MS = 1000;
+  let lastEnterPressAt = 0;
+
   document.addEventListener('click', (e) => {
-    if (window.__abMode !== 'record') return;
+    if (window.__abMode !== 'record' || window.__abBusy) return;
     if (!(e.target instanceof Element)) return;
+    const pointerDriven = e.detail > 0 || e.screenX !== 0 || e.screenY !== 0;
+    if (!pointerDriven && Date.now() - lastEnterPressAt < KEY_ACTIVATION_WINDOW_MS) return;
     const el = interactiveTarget(e.target);
     emit({ type: 'click', selectors: rankSelectors(el) });
   }, true);
 
   document.addEventListener('input', (e) => {
-    if (window.__abMode !== 'record') return;
+    if (window.__abMode !== 'record' || window.__abBusy) return;
     const el = e.target;
     if (!(el instanceof HTMLInputElement) && !(el instanceof HTMLTextAreaElement)) return;
 
@@ -119,15 +198,18 @@
   }, true);
 
   document.addEventListener('keydown', (e) => {
-    if (window.__abMode !== 'record') return;
+    if (window.__abMode !== 'record' || window.__abBusy) return;
     if (e.key !== 'Enter' && e.key !== 'Tab') return;
     const el = e.target;
     if (!(el instanceof Element)) return;
+    // Only Enter activates a control; Tab just moves focus, so a keyboard click
+    // after Tab (e.g. Space on a button) is a real interaction worth recording.
+    if (e.key === 'Enter') lastEnterPressAt = Date.now();
     emit({ type: 'press', selectors: rankSelectors(el), key: e.key });
   }, true);
 
   document.addEventListener('change', (e) => {
-    if (window.__abMode !== 'record') return;
+    if (window.__abMode !== 'record' || window.__abBusy) return;
     const el = e.target;
     if (!(el instanceof HTMLSelectElement)) return;
     emit({ type: 'select_option', selectors: rankSelectors(el), value: el.value });
@@ -149,7 +231,7 @@
   }
 
   document.addEventListener('mouseover', (e) => {
-    if (window.__abMode !== 'pick') return;
+    if (window.__abMode !== 'pick' || window.__abBusy) return;
     const el = e.target;
     if (!(el instanceof Element)) return;
     const rect = el.getBoundingClientRect();
@@ -203,7 +285,7 @@
   }
 
   document.addEventListener('click', (e) => {
-    if (window.__abMode !== 'pick') return;
+    if (window.__abMode !== 'pick' || window.__abBusy) return;
     const el = e.target;
     if (!(el instanceof Element)) return;
     e.preventDefault();

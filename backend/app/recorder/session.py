@@ -17,6 +17,7 @@ from app.models.workflow import Workflow, WorkflowStatus
 from app.recorder.constants import RECORDED_EVENT_TYPES, VALUE_STEP_TYPES
 from app.recorder.extraction import run_extraction
 from app.recorder.profiles import get_profile_dir
+from app.recorder import stealth
 from app.recorder.schema_infer import infer_schema
 from app.recorder.selector_compiler import compile_from_pick, compile_root_from_pick
 from app.redis import redis_client
@@ -51,6 +52,8 @@ class RecordingSession:
         self.parameters: list[dict] = []
         self.extraction: dict = {}
         self.mode = "record"
+        # True while a compile is in flight — the recorder window is locked.
+        self.busy = False
         self.page: Page | None = None
         self.use_saved_logins = False
         self.captured_storage_state: dict | None = None
@@ -106,9 +109,15 @@ class RecordingSession:
                 # no_viewport: otherwise Playwright emulates a fixed 1280×720
                 # viewport — the page clips in small windows, ignores resizes,
                 # and --start-maximized never takes effect.
+                # Stealth args matter at RECORD time too: without them Chromium
+                # sets navigator.webdriver, and aggressive detectors (IMDb and
+                # other Amazon properties, Cloudflare) challenge the recording
+                # window itself — blocking the user before a workflow can even
+                # be captured. Same layer replay uses, so record and replay
+                # present a consistent fingerprint.
                 launch_kwargs: dict = {
                     "headless": False,
-                    "args": ["--start-maximized"],
+                    "args": ["--start-maximized", *stealth.launch_args(headless=False)],
                     "no_viewport": True,
                 }
                 if channel:
@@ -150,6 +159,9 @@ class RecordingSession:
             await self._handle_page_event(event)
 
         await context.expose_binding("__abEmit", on_event)
+        # Stealth first, so the automation tells are gone before any site JS (or
+        # our own recorder overlay) runs.
+        await context.add_init_script(stealth.STEALTH_INIT_JS)
         await context.add_init_script(path=str(INJECTED_JS_PATH))
         context.on("page", lambda new_page: asyncio.create_task(self._handle_new_page(new_page)))
 
@@ -177,6 +189,10 @@ class RecordingSession:
                 await page.evaluate("(m) => window.__abSetMode && window.__abSetMode(m)", self.mode)
             except Exception:
                 pass
+            # A fresh document starts unlocked; restore the lock if a compile is
+            # still running (the page navigated out from under it).
+            if self.busy:
+                await self._set_busy(True)
             await self._check_iframes()
 
         page.on("framenavigated", lambda frame: asyncio.create_task(on_frame_navigated(frame)))
@@ -392,6 +408,12 @@ class RecordingSession:
             await self._handle_compile_field(cmd)
         elif ctype == "suggest_authoring":
             self._start_authoring_task()
+        elif ctype == "end_session":
+            # Close the browser and persist what was recorded, but don't claim
+            # the workflow is *saved* — the user still has to review the steps
+            # and hit Save in the main tab. Same persistence path as `save`;
+            # only the "saved" event (which moves the UI on) is withheld.
+            self._stop.set()
         elif ctype == "save":
             self._save_requested = cmd
             self._stop.set()
@@ -478,18 +500,40 @@ class RecordingSession:
         except Exception as exc:
             await self._publish({"t": "error", "message": f"extraction failed: {exc}"})
 
+    async def _set_busy(self, busy: bool) -> None:
+        """Locks (or unlocks) the recorder window for the duration of a compile.
+
+        A compile is a multi-second LLM round-trip reasoning about the page as it
+        is *right now*. Clicks and keystrokes during it either land in the step
+        list as interactions the user never meant to record, or navigate the page
+        out from under the compiler so the selector it returns no longer matches.
+        """
+        self.busy = busy
+        if self.page is None:
+            return
+        try:
+            await self.page.evaluate("(b) => window.__abSetBusy && window.__abSetBusy(b)", busy)
+        except Exception:
+            log.debug("failed to toggle recorder busy lock", exc_info=True)
+
     async def _handle_compile_root(self) -> None:
         if self._last_pick is None or self.page is None:
+            # The client is showing "Compiling…" and only stops on a reply.
+            await self._publish({"t": "error", "message": "nothing picked to compile yet"})
             return
+        await self._set_busy(True)
         try:
             roots = await compile_root_from_pick(self.page, self._last_pick)
         except Exception as exc:
             log.warning("compile_root failed: %s", exc)
             roots = [self._last_pick.get("generalized") or ""]
+        finally:
+            await self._set_busy(False)
         await self._publish({"t": "root_compiled", "roots": [r for r in roots if r]})
 
     async def _handle_compile_field(self, cmd: dict) -> None:
         if self._last_pick is None or self.page is None:
+            await self._publish({"t": "error", "message": "nothing picked to compile yet"})
             return
         name = cmd.get("name") or "field"
         take = cmd.get("take") or "text"
@@ -499,6 +543,7 @@ class RecordingSession:
             "example": self._last_pick.get("preview"),
             "take": take,
         }
+        await self._set_busy(True)
         try:
             selectors = await compile_from_pick(
                 self.page,
@@ -510,6 +555,8 @@ class RecordingSession:
         except Exception as exc:
             log.warning("compile_field failed: %s", exc)
             selectors = list(self._last_pick.get("selectors") or [])
+        finally:
+            await self._set_busy(False)
         await self._publish({
             "t": "field_compiled",
             "field": {
@@ -600,5 +647,10 @@ class RecordingSession:
             await db.commit()
 
         await self._publish({"t": "status", "state": "closed"})
-        if not self._cancelled:
+        # "saved" is what moves the UI off the recorder page, so it's reserved
+        # for an explicit save. A session that merely ended — the user finished
+        # recording from the floating controls, closed the browser window, or
+        # timed out — has still persisted everything above, but leaves the user
+        # on the recorder page to review the steps and save from there.
+        if self._save_requested is not None:
             await self._publish({"t": "saved"})

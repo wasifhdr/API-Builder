@@ -13,7 +13,9 @@ interface RecorderPipCardProps {
   onRecord: () => void
   onUndo: (i: number) => void
   onMarkParam: (stepI: number, name: string) => void
-  onSave: () => void
+  /** Ends the session (browser closes, this window closes) and hands the user
+   * back to the main tab to review and save. Deliberately not a save. */
+  onFinish: () => void
   onCancel: () => void
 }
 
@@ -21,7 +23,8 @@ interface RecorderPipCardProps {
  * Compact recorder controls rendered into the always-on-top Document
  * Picture-in-Picture window, so they stay visible over the maximized
  * recording browser. The full editor (extraction, test output) stays in the
- * main tab.
+ * main tab — which is also where the workflow is saved: finishing here only
+ * ends the session and hands the user back to that tab.
  */
 export default function RecorderPipCard({
   status,
@@ -31,7 +34,7 @@ export default function RecorderPipCard({
   onRecord,
   onUndo,
   onMarkParam,
-  onSave,
+  onFinish,
   onCancel,
 }: RecorderPipCardProps) {
   return (
@@ -61,8 +64,8 @@ export default function RecorderPipCard({
       />
 
       <div className="flex items-center gap-2">
-        <Button variant="primary" size="sm" onClick={onSave} disabled={!interactive || steps.length === 0}>
-          Save
+        <Button variant="primary" size="sm" onClick={onFinish} disabled={!interactive || steps.length === 0}>
+          Finish recording
         </Button>
         <Button variant="danger-ghost" size="sm" onClick={onCancel} disabled={!interactive}>
           Cancel

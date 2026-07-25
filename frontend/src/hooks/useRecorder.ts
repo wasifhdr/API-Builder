@@ -30,6 +30,10 @@ interface RecorderState {
   wizardRoots: string[]
   wizardFields: ExtractionField[]
   lastCompiled: CompiledField | null
+  /** A compile_root/compile_field round-trip is in flight. The worker locks the
+   * recorder window for its duration, so the wizard must say so and refuse a
+   * second request until the reply lands. */
+  compiling: boolean
 }
 
 const RECONNECT_DELAY_MS = 2000
@@ -71,6 +75,7 @@ export function useRecorder(workflowId: string) {
     wizardRoots: [],
     wizardFields: [],
     lastCompiled: null,
+    compiling: false,
   })
   const wsRef = useRef<WebSocket | null>(null)
   const reconnectTimer = useRef<number | null>(null)
@@ -122,10 +127,11 @@ export function useRecorder(workflowId: string) {
             wizardStep: 'choose-values',
             pickResult: null,
             lastCompiled: null,
+            compiling: false,
           }))
           break
         case 'field_compiled':
-          setState((s) => ({ ...s, lastCompiled: msg.field }))
+          setState((s) => ({ ...s, lastCompiled: msg.field, compiling: false }))
           break
         case 'extraction_result':
           setState((s) => ({ ...s, extractionResult: { sample: msg.sample, schema: msg.schema } }))
@@ -147,7 +153,7 @@ export function useRecorder(workflowId: string) {
           }))
           break
         case 'error':
-          setState((s) => ({ ...s, error: msg.message, authoringPending: false }))
+          setState((s) => ({ ...s, error: msg.message, authoringPending: false, compiling: false }))
           break
         case 'warning':
           setState((s) => ({ ...s, warnings: [...s.warnings, msg.message] }))
@@ -157,7 +163,12 @@ export function useRecorder(workflowId: string) {
           break
         case 'died':
           terminal.current = true
-          setState((s) => ({ ...s, status: 'died', error: 'The recorder crashed unexpectedly.' }))
+          setState((s) => ({
+            ...s,
+            status: 'died',
+            error: 'The recorder crashed unexpectedly.',
+            compiling: false,
+          }))
           break
       }
     }
@@ -187,7 +198,18 @@ export function useRecorder(workflowId: string) {
 
   const setMode = useCallback(
     (mode: 'record' | 'pick') => {
-      setState((s) => ({ ...s, mode, pickResult: null }))
+      setState((s) => ({
+        ...s,
+        mode,
+        pickResult: null,
+        // The wizard only runs in pick mode, so leaving pick mode closes it.
+        // Without this, hitting Record mid-wizard leaves the panel asking for a
+        // pick that can no longer happen — clicks in the browser are being
+        // recorded as steps again, and the wizard sits there waiting forever.
+        ...(mode === 'record'
+          ? { wizardStep: 'idle' as WizardStep, lastCompiled: null, compiling: false }
+          : {}),
+      }))
       send({ t: 'set_mode', mode })
     },
     [send],
@@ -218,12 +240,13 @@ export function useRecorder(workflowId: string) {
   const confirmRoot = useCallback(() => {
     // Ask the worker to compile the picked element into ranked root selectors;
     // the 'root_compiled' event advances the wizard to 'choose-values'.
+    setState((s) => ({ ...s, compiling: true }))
     send({ t: 'compile_root' })
   }, [send])
 
   const compileValue = useCallback(
     (name: string, description: string, take: string) => {
-      setState((s) => ({ ...s, lastCompiled: null }))
+      setState((s) => ({ ...s, lastCompiled: null, compiling: true }))
       send({
         t: 'compile_field',
         mode: state.wizardMode,
@@ -278,10 +301,9 @@ export function useRecorder(workflowId: string) {
     })
   }, [send])
 
-  const cancelWizard = useCallback(() => {
-    setState((s) => ({ ...s, wizardStep: 'idle', mode: 'record', pickResult: null, lastCompiled: null }))
-    send({ t: 'set_mode', mode: 'record' })
-  }, [send])
+  // Cancelling the wizard is exactly "go back to recording" — same teardown, so
+  // the two paths can't drift apart.
+  const cancelWizard = useCallback(() => setMode('record'), [setMode])
 
   const suggestAuthoring = useCallback(() => {
     setState((s) => ({ ...s, authoringPending: true }))
@@ -317,6 +339,7 @@ export function useRecorder(workflowId: string) {
     wizardRoots: state.wizardRoots,
     wizardFields: state.wizardFields,
     lastCompiled: state.lastCompiled,
+    compiling: state.compiling,
     setMode,
     undoStep,
     bringToFront: () => send({ t: 'bring_to_front' }),
@@ -328,6 +351,10 @@ export function useRecorder(workflowId: string) {
     dismissParameterSuggestion,
     dismissExtractionFieldSuggestion,
     save: () => send({ t: 'save' }),
+    /** Ends the recording session — the browser closes and the worker persists
+     * everything — without claiming the workflow is saved. The user stays on
+     * the recorder page to review the steps and save from there. */
+    endSession: () => send({ t: 'end_session' }),
     cancel: () => send({ t: 'cancel' }),
     startWizard,
     chooseWizardMode,

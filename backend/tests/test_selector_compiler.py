@@ -11,6 +11,10 @@ class FakePage:
 
     async def evaluate(self, js, arg=None):
         self.evals.append((js, arg))
+        # Dimming the busy shield after the screenshot is fire-and-forget, not a
+        # validation query — it must not consume a queued result.
+        if "__abDimBusyShield" in js:
+            return None
         return self._eval_results.pop(0)
 
     async def screenshot(self, clip=None):
