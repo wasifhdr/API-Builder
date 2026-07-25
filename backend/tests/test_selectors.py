@@ -41,6 +41,26 @@ def test_role_and_aria_label_fallback():
     assert rank_selectors(el)[0] == '[role="button"][aria-label="Submit search"]'
 
 
+def test_aria_label_without_role_is_tag_qualified():
+    # Native <button> carries an implicit ARIA role but no literal role attr;
+    # its aria-label is still a stable selector and must not be dropped.
+    el = _parse('<button aria-label="Dismiss sign-in info." type="button"></button>', "button")
+    candidates = rank_selectors(el)
+    assert '[aria-label="Dismiss sign-in info."]' in candidates[0]
+    assert candidates[0] == 'button[aria-label="Dismiss sign-in info."]'
+
+
+def test_aria_label_without_role_beats_css_path():
+    html = '<div><div><span aria-label="Close"></span></div></div>'
+    el = _parse(html, "span")
+    candidates = rank_selectors(el)
+    aria = 'span[aria-label="Close"]'
+    css_path = candidates[-1]
+    # aria-label candidate must rank ahead of the positional css_path fallback.
+    assert aria in candidates
+    assert candidates.index(aria) < candidates.index(css_path)
+
+
 def test_css_path_fallback_with_nth_of_type():
     html = """
     <ul>

@@ -44,8 +44,14 @@ def rank_selectors(el: Tag) -> list[str]:
 
     role = el.get("role")
     aria_label = el.get("aria-label")
-    if role and aria_label:
-        candidates.append(f'[role="{role}"][aria-label="{aria_label}"]')
+    if aria_label:
+        # A native control (<button>, <a>) has an implicit ARIA role but no
+        # literal role attribute, so gating on role would drop a perfectly
+        # stable aria-label selector. Tag-qualify it when there's no role.
+        if role:
+            candidates.append(f'[role="{role}"][aria-label="{aria_label}"]')
+        else:
+            candidates.append(f'{el.name}[aria-label="{aria_label}"]')
 
     candidates.append(css_path(el))
 

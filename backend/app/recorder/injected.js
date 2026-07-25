@@ -52,11 +52,34 @@
 
     const role = el.getAttribute('role');
     const ariaLabel = el.getAttribute('aria-label');
-    if (role && ariaLabel) candidates.push(`[role="${role}"][aria-label="${ariaLabel}"]`);
+    if (ariaLabel) {
+      // A native control (<button>, <a>) has an implicit ARIA role but no
+      // literal role attribute, so gating on role would drop a perfectly
+      // stable aria-label selector. Tag-qualify it when there's no role.
+      candidates.push(role
+        ? `[role="${role}"][aria-label="${ariaLabel}"]`
+        : `${el.tagName.toLowerCase()}[aria-label="${ariaLabel}"]`);
+    }
 
     candidates.push(cssPath(el));
 
     return candidates.slice(0, 3);
+  }
+
+  // A click usually lands on an inner icon/span/svg; the meaningfully
+  // selectable control is the nearest interactive ancestor. Resolving to it
+  // before ranking records the control's aria-label/role/id rather than a
+  // decorative leaf's fragile positional css path.
+  const INTERACTIVE_SELECTOR = [
+    'button', 'a[href]', 'input', 'select', 'textarea', 'summary', 'label',
+    '[role="button"]', '[role="link"]', '[role="tab"]', '[role="menuitem"]',
+    '[role="option"]', '[role="checkbox"]', '[role="radio"]',
+    '[onclick]', '[tabindex]',
+  ].join(', ');
+
+  function interactiveTarget(el) {
+    if (!(el instanceof Element)) return el;
+    return el.closest(INTERACTIVE_SELECTOR) || el;
   }
 
   // For "select similar": strips the trailing :nth-of-type(n) from the last
@@ -78,8 +101,8 @@
 
   document.addEventListener('click', (e) => {
     if (window.__abMode !== 'record') return;
-    const el = e.target;
-    if (!(el instanceof Element)) return;
+    if (!(e.target instanceof Element)) return;
+    const el = interactiveTarget(e.target);
     emit({ type: 'click', selectors: rankSelectors(el) });
   }, true);
 
