@@ -1,6 +1,6 @@
 from bs4 import BeautifulSoup
 
-from app.recorder.selectors import rank_selectors
+from app.recorder.selectors import css_path, rank_selectors
 
 
 def _parse(html: str, selector: str):
@@ -81,3 +81,160 @@ def test_top_three_only():
         "button",
     )
     assert len(rank_selectors(el)) == 3
+
+
+# --- uniqueness: an ambiguous selector doesn't fail loudly at replay, it acts
+# on the wrong node, so a candidate that resolves to one element outranks a
+# nominally-stronger attribute that resolves to many.
+
+
+def test_ambiguous_candidate_ranks_below_unique_one():
+    html = """
+    <div data-testid="row"><a class="open-detail-btn">a</a></div>
+    <div data-testid="row"><a class="delete-row-btn">b</a></div>
+    """
+    el = _parse(html, ".delete-row-btn")
+    candidates = rank_selectors(el)
+    assert candidates[0] == "a.delete-row-btn"
+
+
+def test_ambiguous_testid_demoted_below_unique_class():
+    # A shared data-testid is the strongest attribute here and still loses: it
+    # can't tell the two buttons apart, and the class can.
+    html = """
+    <button data-testid="action" class="cancel-btn">Cancel</button>
+    <button data-testid="action" class="confirm-btn">Confirm</button>
+    """
+    el = _parse(html, ".confirm-btn")
+    candidates = rank_selectors(el)
+    assert candidates[0] == "button.confirm-btn"
+    assert candidates[0] != '[data-testid="action"]'
+
+
+def test_ambiguous_id_demoted_below_unique_path():
+    # Duplicate ids are invalid HTML but common in the wild, and "#dup" selects
+    # both, so it's kept only as a fallback behind something that doesn't.
+    html = '<div><span id="dup">one</span><span id="dup">two</span></div>'
+    el = _parse(html, "span:nth-of-type(2)")
+    candidates = rank_selectors(el)
+    assert candidates[0] == "div > span:nth-of-type(2)"
+    assert candidates.index("div > span:nth-of-type(2)") < candidates.index("#dup")
+
+
+# --- anchoring: a floating positional path matches anywhere in the document
+
+
+def test_css_path_is_anchored_at_nearest_stable_ancestor():
+    html = """
+    <section data-testid="results"><div><div><a>Exact matches</a></div></div></section>
+    """
+    el = _parse(html, "a")
+    path = css_path(el)
+    assert path == '[data-testid="results"] > div > div > a'
+
+
+def test_css_path_anchors_beyond_the_contiguous_window_as_descendant():
+    # The anchor sits further up than the spelled-out levels, so the path is
+    # joined with a descendant combinator rather than listing every level.
+    html = """
+    <section id="find-results">
+      <div><div><div><div><div><a>go</a></div></div></div></div></div>
+    </section>
+    """
+    el = _parse(html, "a")
+    path = css_path(el)
+    assert path.startswith("#find-results ")
+    assert " > " in path.split(" ", 1)[1]
+
+
+def test_css_path_without_any_anchor_stays_relative():
+    html = "<div><div><div><a>go</a></div></div></div>"
+    el = _parse(html, "a")
+    assert css_path(el) == "div > div > div > a"
+
+
+# --- new identity-carrying candidates
+
+
+def test_hashed_css_in_js_classes_are_rejected():
+    # styled-components / emotion class names carry a build hash and change on
+    # every deploy, so a selector pinned to one breaks silently later.
+    html = '<div><button class="sc-b5df6b60-0 bycWPN ldgsgc">Go</button></div>'
+    el = _parse(html, "button")
+    assert not any(".sc-b5df6b60-0" in c or "bycWPN" in c or "ldgsgc" in c for c in rank_selectors(el))
+
+
+def test_single_word_class_is_not_treated_as_stable():
+    # No separator is indistinguishable from a short hash, so it's not used.
+    html = '<div><button class="btn">Go</button></div>'
+    el = _parse(html, "button")
+    assert "button.btn" not in rank_selectors(el)
+
+
+def test_text_selector_offered_for_interactive_element():
+    html = '<nav><div><a href="/x">Exact matches</a></div></nav>'
+    el = _parse(html, "a")
+    assert 'a:has-text("Exact matches")' in rank_selectors(el)
+
+
+def test_text_selector_not_offered_for_plain_container():
+    # :has-text on a <div> would match every wrapper up the tree.
+    html = "<section><div><div>Some body copy</div></div></section>"
+    el = _parse(html, "div div")
+    assert not any(":has-text" in c for c in rank_selectors(el))
+
+
+def test_long_text_is_not_used_as_a_selector():
+    text = "a" * 60
+    html = f'<nav><div><a href="/x">{text}</a></div></nav>'
+    el = _parse(html, "a")
+    assert not any(":has-text" in c for c in rank_selectors(el))
+
+
+def test_href_is_a_fallback_not_the_lead_candidate():
+    # A recorded href embeds the values typed while recording, so it goes stale
+    # as soon as the workflow runs with different parameters.
+    html = '<section data-testid="results"><div><a href="/find?q=obsession">Exact matches</a></div></section>'
+    el = _parse(html, "a")
+    candidates = rank_selectors(el)
+    href = 'a[href="/find?q=obsession"]'
+    assert href in candidates
+    assert candidates[0] != href
+
+
+def test_attribute_values_with_quotes_are_escaped():
+    el = _parse("""<button aria-label='Say "hi"'></button>""", "button")
+    assert r'button[aria-label="Say \"hi\""]' in rank_selectors(el)
+
+
+def test_imdb_exact_matches_regression():
+    # The shape that produced "none of the candidate selectors matched": an <a>
+    # with no testid/id/name/aria, whose only recorded selector was a floating
+    # 4-level positional path that matched 28 nodes on the real page.
+    html = """
+    <nav><aside><div><div><div><a href="/">home</a></div></div></div></aside></nav>
+    <div class="page-grid-item">
+      <section data-testid="find-results-section-title">
+        <div class="ipc-title">
+          <div class="ipc-title__wrapper">
+            <hgroup><h3>Titles</h3></hgroup>
+            <div class="ipc-title__actions">
+              <a class="ipc-btn ipc-btn--core-base results-section-exact-match-btn"
+                 href="/find/?q=obsession&amp;exact=true">Exact matches</a>
+            </div>
+          </div>
+        </div>
+        <div class="other"></div>
+      </section>
+    </div>
+    """
+    soup = BeautifulSoup(html, "lxml")
+    el = soup.select_one("a.results-section-exact-match-btn")
+    candidates = rank_selectors(el)
+
+    # The lead candidate must resolve to exactly this element, and must not be
+    # the bare positional path that also matches the hidden nav-drawer link.
+    lead = candidates[0]
+    assert lead != "div:nth-of-type(1) > div > div > a"
+    matched = soup.select(lead)
+    assert len(matched) == 1 and matched[0] is el

@@ -67,6 +67,38 @@ async def test_selector_fallback_uses_second_candidate(fixture_site_url):
     assert result["data"] == {"echoed": "fallback worked"}
 
 
+async def test_ambiguous_selector_binds_to_first_visible_match():
+    # A recorded positional path often matches many nodes; the first in document
+    # order is routinely a hidden copy in a collapsed nav drawer. Binding to it
+    # (Playwright's .first) times out waiting for visibility while the element
+    # the user actually clicked sits visible further down the page.
+    html = """
+    <div id='drawer' style='display:none'><div><div><a id='hidden-link' href='#'>go</a></div></div></div>
+    <div><div><div><a id='real-link' href='#'>go</a></div></div></div>
+    <div id='out'></div>
+    <script>
+    document.querySelectorAll('a').forEach(function (a) {
+      a.addEventListener('click', function (e) {
+        e.preventDefault();
+        document.getElementById('out').textContent = a.id;
+      });
+    });
+    </script>
+    """
+    snapshot = {
+        "steps": [
+            {"i": 0, "type": "goto", "url": f"data:text/html,{quote(html)}"},
+            {"i": 1, "type": "click", "selectors": ["div > div > div > a"]},
+            {"i": 2, "type": "extract", "ref": "main"},
+        ],
+        "extraction": {
+            "main": {"mode": "single", "fields": [{"name": "clicked", "selector": "#out", "take": "text"}]}
+        },
+    }
+    result = await replay_workflow(snapshot, {}, None, uuid.uuid4())
+    assert result["data"] == {"clicked": "real-link"}
+
+
 async def test_replay_uses_recorded_viewport():
     # A page that echoes its own viewport width; replay must run at the size
     # stored in browser_settings, not the 1280x800 default.

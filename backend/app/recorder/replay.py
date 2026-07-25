@@ -21,6 +21,12 @@ log = logging.getLogger("recorder")
 # replay without needing a full re-record.
 SELECTOR_ATTEMPT_TIMEOUTS_MS = [10_000, 5_000, 5_000]
 
+# An ambiguous selector is scanned for its first visible match rather than
+# blindly bound to document order. The cap keeps a pathologically broad selector
+# (hundreds of matches) from burning the whole budget on visibility checks.
+MAX_SELECTOR_MATCHES_SCANNED = 30
+SELECTOR_VISIBILITY_POLL_MS = 250
+
 # Fixed dwell after every page load (initial navigation and any load triggered
 # by a click/press) before we begin interacting with the new page. Gives
 # heavy/SPA pages time to settle so selectors resolve against the final DOM.
@@ -262,13 +268,40 @@ async def _persist_heal(workflow_id: uuid.UUID, ref: str, field_name: str, selec
         log.warning("selector cache upsert failed: %s", exc)
 
 
+async def _first_visible(page: Page, selector: str, timeout_ms: int):
+    """Return the first *visible* node a selector matches, or None on timeout.
+
+    Recorded selectors aren't always unique — a positional css-path fallback can
+    match dozens of nodes on a real page. Playwright's `.first` binds by
+    document order, which routinely lands on a hidden copy inside a collapsed
+    nav drawer or an off-screen mobile layout; waiting for that to become
+    visible then times out while the element the user actually clicked sits
+    visible further down the page. Scan the matches instead and take the first
+    one that's really visible. Polling doubles as the wait for late-rendering
+    content, so this keeps the old behaviour when the selector is unique.
+    """
+    deadline = asyncio.get_running_loop().time() + timeout_ms / 1000
+    locator = page.locator(selector)
+    while True:
+        count = min(await locator.count(), MAX_SELECTOR_MATCHES_SCANNED)
+        for i in range(count):
+            candidate = locator.nth(i)
+            if await candidate.is_visible():
+                if i:
+                    log.info("selector %r matched %d nodes; using visible #%d", selector, count, i)
+                return candidate
+        if asyncio.get_running_loop().time() >= deadline:
+            return None
+        await page.wait_for_timeout(SELECTOR_VISIBILITY_POLL_MS)
+
+
 async def _locate(page: Page, selectors: list[str]):
     last_exc: Exception | None = None
     for selector, timeout_ms in zip(selectors, SELECTOR_ATTEMPT_TIMEOUTS_MS):
-        locator = page.locator(selector).first
         try:
-            await locator.wait_for(state="visible", timeout=timeout_ms)
-            return locator
+            locator = await _first_visible(page, selector, timeout_ms)
+            if locator is not None:
+                return locator
         except Exception as exc:
             last_exc = exc
             continue
