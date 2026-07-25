@@ -5,14 +5,17 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.core.deps import current_user
 from app.db import get_db
 from app.models.api import CustomApi
 from app.models.user import User
 from app.models.workflow import Workflow, WorkflowStatus
+from app.recorder.constants import VALUE_STEP_TYPES
 from app.redis import redis_client
 from app.schemas.api import CustomApiOut
-from app.schemas.workflow import WorkflowListItem, WorkflowOut, WorkflowUpdate
+from app.schemas.workflow import MarkParameterIn, WorkflowListItem, WorkflowOut, WorkflowUpdate
+from app.services import authoring
 from app.services.publish import publish_workflow
 
 router = APIRouter(prefix="/workflows", tags=["workflows"])
@@ -112,6 +115,95 @@ async def publish(
     if workflow.status != WorkflowStatus.READY:
         raise HTTPException(status_code=400, detail="workflow must be ready (needs extraction) to publish")
     return await publish_workflow(workflow, db)
+
+
+@router.post("/{workflow_id}/suggest-parameters", status_code=202)
+async def request_parameter_suggestions(
+    workflow_id: uuid.UUID,
+    user: User = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Queues the same LLM suggestion the recorder offers in-session, for a
+    workflow whose browser has already closed. Poll the GET for the result."""
+    workflow = await _get_owned_workflow(workflow_id, user, db)
+    if not settings.llm_enabled:
+        raise HTTPException(status_code=503, detail="AI suggestions are disabled on this server.")
+    if not workflow.steps:
+        raise HTTPException(status_code=400, detail="this workflow has no recorded steps yet")
+    if workflow.status == WorkflowStatus.RECORDING:
+        # The live session answers suggest_authoring over the WS and can also
+        # name extraction fields; queuing a second, weaker one would race it.
+        raise HTTPException(status_code=409, detail="ask the running recorder for suggestions instead")
+
+    # Written before the enqueue so a poll landing in the gap sees "pending"
+    # rather than "idle" and gives up.
+    key = authoring.suggestions_key(workflow.id)
+    await redis_client.set(key, json.dumps({"state": "pending"}), ex=authoring.RESULT_TTL_SECONDS)
+    await redis_client.xadd(
+        "jobs:llm",
+        {"payload": json.dumps({"kind": authoring.JOB_KIND, "workflow_id": str(workflow.id)})},
+    )
+    return {"state": "pending"}
+
+
+@router.get("/{workflow_id}/suggest-parameters")
+async def get_parameter_suggestions(
+    workflow_id: uuid.UUID,
+    user: User = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    await _get_owned_workflow(workflow_id, user, db)  # ownership check
+    raw = await redis_client.get(authoring.suggestions_key(workflow_id))
+    if raw is None:
+        return {"state": "idle"}
+    try:
+        return json.loads(raw)
+    except (TypeError, ValueError):
+        return {"state": "idle"}
+
+
+@router.post("/{workflow_id}/mark-parameter", response_model=WorkflowOut)
+async def mark_parameter(
+    workflow_id: uuid.UUID,
+    body: MarkParameterIn,
+    user: User = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+) -> WorkflowOut:
+    """Out-of-session `mark_param`: swaps a recorded literal for a named
+    parameter. Mirrors RecordingSession._handle_mark_param, including reusing a
+    name (the last marking of a name wins)."""
+    workflow = await _get_owned_workflow(workflow_id, user, db)
+    if workflow.status == WorkflowStatus.RECORDING:
+        raise HTTPException(status_code=409, detail="mark parameters from the running recorder instead")
+
+    # JSONB columns are replaced, never mutated in place — copy before editing.
+    steps = [dict(s) for s in workflow.steps]
+    if body.step_i >= len(steps):
+        raise HTTPException(status_code=404, detail="no such step")
+
+    step = steps[body.step_i]
+    value = step.get("value")
+    if step.get("type") not in VALUE_STEP_TYPES or not isinstance(value, dict):
+        raise HTTPException(status_code=400, detail="this step has no value to parameterize")
+    if "literal" not in value:
+        raise HTTPException(status_code=400, detail="this step is already a parameter")
+
+    step["value"] = {"param": body.name}
+    workflow.steps = steps
+    workflow.parameters = [
+        *(p for p in workflow.parameters if p.get("name") != body.name),
+        {
+            "name": body.name,
+            "type": body.type,
+            "required": True,
+            "example": value["literal"],
+            "description": body.description,
+            "source_step": body.step_i,
+        },
+    ]
+    await db.commit()
+    await db.refresh(workflow)
+    return await _serialize_workflow(workflow, db)
 
 
 @router.post("/{workflow_id}/rerecord", status_code=202)

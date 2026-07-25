@@ -15,6 +15,10 @@ const STEP_TONE: Record<Step['type'], string> = {
 interface RecorderStepListProps {
   steps: Step[]
   interactive: boolean
+  /** Marking parameters outlives the recording session — the steps are in the
+   * DB by then, so it can go over REST. Undo can't: it edits live session
+   * state. Defaults to `interactive` for callers that don't distinguish. */
+  canEditParams?: boolean
   onUndo: (i: number) => void
   onMarkParam: (stepI: number, name: string) => void
   /** AI-suggested parameters, keyed by step_i — optional so callers that don't
@@ -29,6 +33,7 @@ interface RecorderStepListProps {
 export default function RecorderStepList({
   steps,
   interactive,
+  canEditParams = interactive,
   onUndo,
   onMarkParam,
   suggestions = [],
@@ -78,7 +83,7 @@ export default function RecorderStepList({
                   <button
                     type="button"
                     onClick={() => setParamFormFor(step.i)}
-                    disabled={!interactive}
+                    disabled={!canEditParams}
                     className="rounded-pill border border-cream/30 px-2 py-0.5 text-[11px] font-bold text-cream hover:bg-cream/10 disabled:opacity-40"
                   >
                     Make parameter
@@ -105,7 +110,7 @@ export default function RecorderStepList({
                   <button
                     type="button"
                     onClick={() => onAcceptSuggestion?.(suggestion)}
-                    disabled={!interactive}
+                    disabled={!canEditParams}
                     className="rounded-pill bg-gold px-2 py-0.5 text-[11px] font-bold text-ink disabled:opacity-40"
                   >
                     Accept

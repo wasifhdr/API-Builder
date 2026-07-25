@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.core.security import decrypt_bytes
 from app.db import async_session
+from app.llm.authoring import suggest_parameters
 from app.llm.enrich import enrich_spec
 from app.llm.spec_builder import build_skeleton
 from app.models.api import CustomApi, SpecStatus
@@ -21,7 +22,7 @@ from app.models.workflow import Workflow
 from app.recorder.replay import ReplayError, replay_workflow
 from app.recorder.session import RecordingSession
 from app.redis import redis_client
-from app.services import wallet
+from app.services import authoring, wallet
 
 log = logging.getLogger("worker")
 
@@ -211,3 +212,40 @@ async def generate_spec(payload: dict) -> None:
             api.openapi_spec = spec
             api.spec_status = SpecStatus.READY
             await db.commit()
+
+
+async def suggest_workflow_parameters(payload: dict) -> None:
+    """Parameter suggestions for a workflow whose recording session is over.
+
+    Identical LLM call to the recorder's in-session `suggest_authoring`, just
+    reading the steps from the DB instead of live session state, with the result
+    left in Redis for the page to poll (see app.services.authoring). Extraction
+    field suggestions are deliberately not part of this: they need a sample row
+    from a live page, which no longer exists once the browser has closed."""
+    workflow_id = uuid.UUID(payload["workflow_id"])
+    key = authoring.suggestions_key(workflow_id)
+
+    async with async_session() as db:
+        workflow = await db.get(Workflow, workflow_id)
+        steps = list(workflow.steps) if workflow is not None else None
+
+    if steps is None:
+        result = {"state": "error", "message": "workflow not found"}
+    else:
+        try:
+            result = {"state": "ready", "parameters": await suggest_parameters(steps)}
+        except Exception as exc:
+            log.exception("parameter suggestion job failed for workflow_id=%s", workflow_id)
+            result = {"state": "error", "message": f"Parameter suggestions failed: {exc}"}
+
+    await redis_client.set(key, json.dumps(result), ex=authoring.RESULT_TTL_SECONDS)
+
+
+async def llm_job(payload: dict) -> None:
+    """Single entry point for the serialized `jobs:llm` stream, so every LLM job
+    shares the one-at-a-time budget. Payloads without a `kind` are spec
+    generations — the original and still most common job."""
+    if payload.get("kind") == authoring.JOB_KIND:
+        await suggest_workflow_parameters(payload)
+        return
+    await generate_spec(payload)

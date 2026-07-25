@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { Link, Navigate, useNavigate, useParams } from 'react-router-dom'
 import AppShell from '../components/AppShell'
@@ -11,9 +11,21 @@ import { usePipWindow } from '../hooks/usePipWindow'
 import { api, ApiError } from '../lib/api'
 import { STATUS_BADGE, STATUS_LABEL } from '../lib/recorderStatus'
 import { useRecorder } from '../hooks/useRecorder'
-import type { ExtractionConfig, ParameterSuggestion } from '../lib/types'
+import type { ExtractionConfig, ParameterSuggestion, Step } from '../lib/types'
 
 const EMPTY_EXTRACTION: ExtractionConfig = { mode: 'single', fields: [] }
+
+/** Poll cadence and ceiling for the out-of-session suggestion job. The LLM call
+ * is serialized behind spec generations on `jobs:llm`, so allow for a wait. */
+const SUGGEST_POLL_MS = 1500
+const SUGGEST_POLL_LIMIT = 60
+
+type SuggestionsResponse =
+  | { state: 'idle' | 'pending' }
+  | { state: 'ready'; parameters: ParameterSuggestion[] }
+  | { state: 'error'; message: string }
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 
 export default function RecorderSession() {
   const { workflowId } = useParams<{ workflowId: string }>()
@@ -87,11 +99,29 @@ export default function RecorderSession() {
   const [confirmingDelete, setConfirmingDelete] = useState(false)
   const [deleteError, setDeleteError] = useState<string | null>(null)
 
+  // Once the session is over the recorder can't answer anything, but parameter
+  // suggestions only need the recorded steps — which are in the DB. So after
+  // the browser closes the same suggestion runs as a queued LLM job and this
+  // page drives it over REST, shadowing the WS-backed state below.
+  const [restSteps, setRestSteps] = useState<Step[] | null>(null)
+  const [restSuggestions, setRestSuggestions] = useState<ParameterSuggestion[]>([])
+  const [restPending, setRestPending] = useState(false)
+  const [restError, setRestError] = useState<string | null>(null)
+
+  const shownSteps = restSteps ?? steps
+  const shownSuggestions = sessionEnded ? restSuggestions : parameterSuggestions
+  const suggestPending = sessionEnded ? restPending : authoringPending
+
   // Once the session ends (saved, cancelled, or crashed) the card has nothing
   // to control — close it so the user lands back on this tab.
   useEffect(() => {
     if (saved || status === 'closed' || status === 'died') closePip()
   }, [saved, status, closePip])
+
+  // Stops the suggestion poll from outliving the page — it would otherwise keep
+  // hitting the server for the rest of its 90s budget after the user leaves.
+  const mounted = useRef(true)
+  useEffect(() => () => { mounted.current = false }, [])
 
   async function deleteWorkflow() {
     setDeleting(true)
@@ -112,8 +142,65 @@ export default function RecorderSession() {
     setExtraction(next)
   }
 
+  async function requestSuggestions() {
+    if (!sessionEnded) {
+      suggestAuthoring()
+      return
+    }
+    setRestPending(true)
+    setRestError(null)
+    setRestSuggestions([])
+    try {
+      await api.post(`/workflows/${workflowId}/suggest-parameters`)
+      for (let i = 0; i < SUGGEST_POLL_LIMIT; i++) {
+        await sleep(SUGGEST_POLL_MS)
+        if (!mounted.current) return
+        const res = await api.get<SuggestionsResponse>(`/workflows/${workflowId}/suggest-parameters`)
+        if (res.state === 'ready') {
+          setRestSuggestions(res.parameters)
+          if (res.parameters.length === 0) setRestError('No parameters worth suggesting in these steps.')
+          return
+        }
+        if (res.state === 'error') throw new Error(res.message)
+        // 'idle' means the result expired mid-poll; 'pending' means keep waiting.
+      }
+      throw new Error('Suggestions are taking too long — try again in a moment.')
+    } catch (err) {
+      setRestError(err instanceof ApiError || err instanceof Error ? err.message : 'Suggestions failed')
+    } finally {
+      setRestPending(false)
+    }
+  }
+
+  function dismissSuggestion(stepI: number) {
+    if (sessionEnded) setRestSuggestions((s) => s.filter((sg) => sg.step_i !== stepI))
+    else dismissParameterSuggestion(stepI)
+  }
+
+  async function markParameter(stepI: number, name: string, type?: string, description?: string | null) {
+    if (!sessionEnded) {
+      markParam(stepI, name, type, description)
+      return
+    }
+    // No worker to route through — persist straight to the workflow, then take
+    // its updated steps as the source of truth for the list.
+    setRestError(null)
+    try {
+      const workflow = await api.post<{ steps: Step[] }>(`/workflows/${workflowId}/mark-parameter`, {
+        step_i: stepI,
+        name,
+        type: type ?? 'string',
+        description: description ?? null,
+      })
+      setRestSteps(workflow.steps)
+      dismissSuggestion(stepI)
+    } catch (err) {
+      setRestError(err instanceof ApiError ? err.message : 'Failed to mark parameter')
+    }
+  }
+
   function acceptParameterSuggestion(suggestion: ParameterSuggestion) {
-    markParam(suggestion.step_i, suggestion.name, suggestion.type, suggestion.description)
+    void markParameter(suggestion.step_i, suggestion.name, suggestion.type, suggestion.description)
   }
 
   function acceptExtractionFieldSuggestion(selector: string, name: string, take: string, transform: string) {
@@ -136,7 +223,7 @@ export default function RecorderSession() {
           &larr; Dashboard
         </Link>
         <div className="flex items-center gap-3">
-          <StatChip value={steps.length} label="steps recorded" />
+          <StatChip value={shownSteps.length} label="steps recorded" />
           <Badge variant={STATUS_BADGE[status]} pulse={status === 'ready'}>
             {STATUS_LABEL[status]}
           </Badge>
@@ -215,10 +302,10 @@ export default function RecorderSession() {
           <Button
             variant="ghost"
             size="sm"
-            onClick={suggestAuthoring}
-            disabled={!interactive || steps.length === 0 || authoringPending}
+            onClick={requestSuggestions}
+            disabled={(!interactive && !sessionEnded) || shownSteps.length === 0 || suggestPending}
           >
-            {authoringPending ? (
+            {suggestPending ? (
               <>
                 <Spinner className="size-4" /> Thinking…
               </>
@@ -227,14 +314,16 @@ export default function RecorderSession() {
             )}
           </Button>
         </div>
+        {restError && <p className="mt-2 text-sm font-medium text-red-deep">{restError}</p>}
         <RecorderStepList
-          steps={steps}
+          steps={shownSteps}
           interactive={interactive}
+          canEditParams={interactive || sessionEnded}
           onUndo={undoStep}
-          onMarkParam={markParam}
-          suggestions={parameterSuggestions}
+          onMarkParam={markParameter}
+          suggestions={shownSuggestions}
           onAcceptSuggestion={acceptParameterSuggestion}
-          onDismissSuggestion={dismissParameterSuggestion}
+          onDismissSuggestion={dismissSuggestion}
         />
       </section>
 
@@ -300,7 +389,7 @@ export default function RecorderSession() {
         <Button
           variant="primary"
           onClick={sessionEnded ? () => navigate(`/workflows/${workflowId}/edit`) : save}
-          disabled={steps.length === 0 || (!interactive && !sessionEnded)}
+          disabled={shownSteps.length === 0 || (!interactive && !sessionEnded)}
         >
           Save
         </Button>
