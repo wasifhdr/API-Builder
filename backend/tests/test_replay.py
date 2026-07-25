@@ -120,6 +120,41 @@ async def test_extract_waits_for_async_rendered_content():
     assert result["data"] == [{"name": "Alice"}]
 
 
+async def test_stealth_hides_automation_tells():
+    # Bot detectors challenge a visit when it looks automated. The stealth init
+    # script must have run before page JS, so the page itself observes a normal
+    # Chrome: no navigator.webdriver, a non-empty plugin list, window.chrome
+    # present. Reading these from inside the page is exactly what a detector does.
+    html = """
+    <div id='wd'></div><div id='plugins'></div><div id='chrome'></div>
+    <script>
+    document.getElementById('wd').textContent = String(navigator.webdriver);
+    document.getElementById('plugins').textContent = String(navigator.plugins.length);
+    document.getElementById('chrome').textContent = String(!!window.chrome);
+    </script>
+    """
+    snapshot = {
+        "steps": [
+            {"i": 0, "type": "goto", "url": f"data:text/html,{quote(html)}"},
+            {"i": 1, "type": "extract", "ref": "main"},
+        ],
+        "extraction": {
+            "main": {
+                "mode": "single",
+                "fields": [
+                    {"name": "webdriver", "selector": "#wd", "take": "text"},
+                    {"name": "plugins", "selector": "#plugins", "take": "text", "transform": "number"},
+                    {"name": "chrome", "selector": "#chrome", "take": "text"},
+                ],
+            }
+        },
+    }
+    result = await replay_workflow(snapshot, {}, None, uuid.uuid4())
+    assert result["data"]["webdriver"] == "undefined"  # the loudest tell, gone
+    assert result["data"]["plugins"] > 0
+    assert result["data"]["chrome"] == "true"
+
+
 async def test_all_selectors_missing_raises_replay_error_with_artifacts(fixture_site_url):
     execution_id = uuid.uuid4()
     snapshot = {

@@ -1,8 +1,10 @@
+import asyncio
+import contextlib
 import logging
 import uuid
 from typing import Any
 
-from playwright.async_api import Page, async_playwright
+from playwright.async_api import BrowserContext, Page, async_playwright
 
 from app.config import settings
 from app.db import async_session
@@ -10,6 +12,7 @@ from app.recorder.extraction import run_extraction
 from app.recorder.llm_extract import llm_fill_missing, semantic_extract
 from app.recorder.selector_cache import read_cache, upsert_cache
 from app.recorder import selector_compiler
+from app.recorder import stealth
 
 log = logging.getLogger("recorder")
 
@@ -29,6 +32,75 @@ DEFAULT_USER_AGENT = (
 )
 
 DEFAULT_VIEWPORT = {"width": 1280, "height": 800}
+
+# Steady the fingerprint: a locale/timezone that match a normal desktop Chrome
+# (and the deployment's Asia/Dhaka clock) rather than the context defaults,
+# which detectors flag when they disagree with the IP or each other.
+DEFAULT_LOCALE = "en-US"
+DEFAULT_TIMEZONE = "Asia/Dhaka"
+
+# Chromium single-instance-locks a profile directory, so two replays reusing the
+# same owner's warmed profile can't run at once. Serialize per user_id. The
+# worker is the sole Playwright owner (single process), so an in-process lock is
+# sufficient — no cross-process file lock needed.
+_profile_locks: dict[str, asyncio.Lock] = {}
+
+
+def _profile_lock(user_id: uuid.UUID) -> asyncio.Lock:
+    key = str(user_id)
+    lock = _profile_locks.get(key)
+    if lock is None:
+        lock = asyncio.Lock()
+        _profile_locks[key] = lock
+    return lock
+
+
+async def _open_context(
+    pw,
+    *,
+    headless: bool,
+    viewport: dict,
+    storage_state: dict | None,
+    profile_dir,
+) -> tuple[Any, BrowserContext]:
+    """Open the replay browser context. Returns (browser, context); `browser` is
+    None for the persistent-profile path (launch_persistent_context yields the
+    context directly). Both paths carry the stealth launch args and a
+    human-looking UA/locale/timezone; the caller injects STEALTH_INIT_JS."""
+    args = stealth.launch_args(headless)
+    if profile_dir is not None:
+        # Warm-profile path: reuse the owner's recorder profile (cookies,
+        # history, consistent fingerprint) and overlay the workflow's captured
+        # auth cookies on top so replay authenticates as it did at record time.
+        context = await pw.chromium.launch_persistent_context(
+            str(profile_dir),
+            headless=headless,
+            slow_mo=settings.replay_slow_mo_ms,
+            args=args,
+            user_agent=DEFAULT_USER_AGENT,
+            viewport=viewport,
+            locale=DEFAULT_LOCALE,
+            timezone_id=DEFAULT_TIMEZONE,
+        )
+        cookies = (storage_state or {}).get("cookies")
+        if cookies:
+            try:
+                await context.add_cookies(cookies)
+            except Exception as exc:
+                log.warning("failed to overlay auth cookies on profile: %s", exc)
+        return None, context
+
+    browser = await pw.chromium.launch(headless=headless, slow_mo=settings.replay_slow_mo_ms, args=args)
+    context_kwargs: dict = {
+        "user_agent": DEFAULT_USER_AGENT,
+        "viewport": viewport,
+        "locale": DEFAULT_LOCALE,
+        "timezone_id": DEFAULT_TIMEZONE,
+    }
+    if storage_state is not None:
+        context_kwargs["storage_state"] = storage_state
+    context = await browser.new_context(**context_kwargs)
+    return browser, context
 
 
 def _replay_viewport(workflow_snapshot: dict) -> dict:
@@ -247,6 +319,7 @@ async def replay_workflow(
     execution_id: uuid.UUID,
     headless: bool | None = None,
     workflow_id: uuid.UUID | None = None,
+    user_id: uuid.UUID | None = None,
 ) -> dict[str, Any]:
     steps = workflow_snapshot.get("steps", [])
     extraction = workflow_snapshot.get("extraction", {})
@@ -256,21 +329,32 @@ async def replay_workflow(
     # process-level default from config/.env.
     launch_headless = settings.replay_headless if headless is None else headless
 
-    async with async_playwright() as pw:
-        browser = await pw.chromium.launch(
+    # Warm-profile replay: reuse the owner's persistent recorder profile so the
+    # visit carries real browsing reputation and a consistent fingerprint,
+    # instead of the pristine, obviously-automated context that gets challenged.
+    # Only when enabled AND the profile actually exists (owner recorded with
+    # saved logins on). Serialized per user (Chromium locks the profile dir).
+    profile_dir = None
+    if user_id is not None and settings.replay_use_profile:
+        candidate = settings.profiles_path / str(user_id)
+        if candidate.exists():
+            profile_dir = candidate
+    lock = _profile_lock(user_id) if (profile_dir is not None and user_id is not None) else contextlib.nullcontext()
+
+    async with lock, async_playwright() as pw:
+        browser, context = await _open_context(
+            pw,
             headless=launch_headless,
-            slow_mo=settings.replay_slow_mo_ms,
-            args=["--disable-gpu"],
+            viewport=_replay_viewport(workflow_snapshot),
+            storage_state=storage_state,
+            profile_dir=profile_dir,
         )
-        context_kwargs: dict = {
-            "user_agent": DEFAULT_USER_AGENT,
-            "viewport": _replay_viewport(workflow_snapshot),
-        }
-        if storage_state is not None:
-            context_kwargs["storage_state"] = storage_state
-        context = await browser.new_context(**context_kwargs)
         context.set_default_timeout(10_000)
-        page = await context.new_page()
+        # Injected before any site JS runs on every page — hides the automation
+        # tells (navigator.webdriver, empty plugins, headless WebGL) that raise
+        # bot-detection challenges. Applies to both launch paths.
+        await context.add_init_script(stealth.STEALTH_INIT_JS)
+        page = context.pages[0] if context.pages else await context.new_page()
 
         # Track main-frame navigations so we can dwell POST_NAV_WAIT_MS after
         # every page load — the initial goto and any load a click/press kicks
@@ -351,10 +435,12 @@ async def replay_workflow(
         except Exception as exc:
             artifact_path = await _dump_failure_artifacts(page, execution_id)
             await context.close()
-            await browser.close()
+            if browser is not None:
+                await browser.close()
             raise ReplayError(str(exc), artifact_path=artifact_path) from exc
         else:
             await context.close()
-            await browser.close()
+            if browser is not None:
+                await browser.close()
 
     return {"data": data}

@@ -122,6 +122,7 @@ async def execute_api(payload: dict) -> None:
             replay_workflow(
                 workflow_snapshot, params, storage_state, execution_id,
                 headless=headless, workflow_id=api.workflow_id,
+                user_id=workflow.user_id if workflow is not None else None,
             ),
             timeout=settings.exec_timeout_seconds,
         )

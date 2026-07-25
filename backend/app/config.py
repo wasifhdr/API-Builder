@@ -43,6 +43,14 @@ class Settings(BaseSettings):
     # (headful contends for the Windows desktop).
     replay_headless: bool = True
     replay_slow_mo_ms: int = 0
+    # Launch replay from the owner's warmed persistent recorder profile
+    # (data/profiles/<user_id>) instead of a pristine context, overlaying the
+    # workflow's captured auth cookies. Carries the profile's browsing
+    # reputation/fingerprint so bot-detection challenges the visit less often —
+    # for the challenge-prone APIs. Off by default: adds a per-user replay lock
+    # (Chromium single-instance-locks a profile dir) so concurrent replays of
+    # one user's workflows serialize. Stealth patches apply regardless.
+    replay_use_profile: bool = False
 
     llm_enabled: bool = True
     llm_provider: str = "gemini"
