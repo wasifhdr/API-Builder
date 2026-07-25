@@ -54,7 +54,11 @@ async def list_apis(
     user: User = Depends(current_user),
     db: AsyncSession = Depends(get_db),
 ) -> list[CustomApi]:
-    owned_result = await db.execute(select(CustomApi).where(CustomApi.owner_id == user.id))
+    owned_result = await db.execute(
+        select(CustomApi)
+        .where(CustomApi.owner_id == user.id)
+        .order_by(CustomApi.updated_at.desc())
+    )
     owned = list(owned_result.scalars().all())
 
     granted_result = await db.execute(
