@@ -371,12 +371,7 @@ class RecordingSession:
                 except Exception:
                     pass
         elif ctype == "undo_step":
-            i = cmd.get("i")
-            if isinstance(i, int) and 0 <= i < len(self.steps):
-                self.steps.pop(i)
-                for j, s in enumerate(self.steps):
-                    s["i"] = j
-                await self._publish({"t": "step_removed", "i": i})
+            await self._handle_undo_step(cmd)
         elif ctype == "bring_to_front":
             if self.page is not None:
                 try:
@@ -405,6 +400,38 @@ class RecordingSession:
             self._stop.set()
         else:
             log.debug("ignoring command not yet supported: %s", ctype)
+
+    async def _handle_undo_step(self, cmd: dict) -> None:
+        # `i` is a position, not an identity: removing a step renumbers every
+        # step after it, and any index the client still holds is off by one per
+        # earlier removal. So the event carries the whole post-removal state and
+        # the client replaces its list wholesale — otherwise the drift makes
+        # later undos hit the wrong step, then fall out of range and be silently
+        # dropped ("undo stops working after a few clicks").
+        i = cmd.get("i")
+        if not isinstance(i, int) or not (0 <= i < len(self.steps)):
+            return
+        self.steps.pop(i)
+        for j, s in enumerate(self.steps):
+            s["i"] = j
+
+        # Parameters point back at a step index too. The removed step's
+        # parameter no longer has anything to fill, and later ones shifted down.
+        remaining = []
+        for p in self.parameters:
+            src = p.get("source_step")
+            if not isinstance(src, int) or src < i:
+                remaining.append(p)
+            elif src > i:
+                remaining.append({**p, "source_step": src - 1})
+        self.parameters = remaining
+
+        await self._publish({
+            "t": "step_removed",
+            "i": i,
+            "steps": self.steps,
+            "parameters": self.parameters,
+        })
 
     async def _handle_mark_param(self, cmd: dict) -> None:
         step_i = cmd.get("step_i")

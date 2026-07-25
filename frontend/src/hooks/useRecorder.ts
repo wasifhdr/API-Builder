@@ -34,6 +34,24 @@ interface RecorderState {
 
 const RECONNECT_DELAY_MS = 2000
 
+/** Mirror of the worker's undo bookkeeping: `i` is a position, so removing a
+ * step renumbers everything after it and shifts every index that referenced it.
+ * Applied optimistically on click so a second undo sent before the round-trip
+ * still targets the step the user sees; the worker's `step_removed` snapshot
+ * then overwrites this with the authoritative state. */
+function applyStepRemoval(s: RecorderState, i: number): RecorderState {
+  return {
+    ...s,
+    steps: s.steps.filter((step) => step.i !== i).map((step, j) => ({ ...step, i: j })),
+    parameters: s.parameters
+      .filter((p) => p.source_step !== i)
+      .map((p) => (p.source_step !== null && p.source_step > i ? { ...p, source_step: p.source_step - 1 } : p)),
+    parameterSuggestions: s.parameterSuggestions
+      .filter((sg) => sg.step_i !== i)
+      .map((sg) => (sg.step_i > i ? { ...sg, step_i: sg.step_i - 1 } : sg)),
+  }
+}
+
 export function useRecorder(workflowId: string) {
   const [state, setState] = useState<RecorderState>({
     status: 'connecting',
@@ -57,6 +75,8 @@ export function useRecorder(workflowId: string) {
   const wsRef = useRef<WebSocket | null>(null)
   const reconnectTimer = useRef<number | null>(null)
   const terminal = useRef(false)
+  /** Undos applied locally that the worker hasn't echoed back yet. */
+  const pendingUndos = useRef(0)
 
   const connect = useCallback(() => {
     const protocol = location.protocol === 'https:' ? 'wss' : 'ws'
@@ -78,11 +98,19 @@ export function useRecorder(workflowId: string) {
           setState((s) => ({ ...s, steps: [...s.steps, msg.step] }))
           break
         case 'step_removed':
-          setState((s) => ({
-            ...s,
-            steps: s.steps.filter((step) => step.i !== msg.i),
-            parameterSuggestions: s.parameterSuggestions.filter((sg) => sg.step_i !== msg.i),
-          }))
+          setState((s) => {
+            // Our own undo already applied optimistically; only remap for a
+            // removal we didn't make (another tab, or a pre-snapshot worker).
+            const alreadyApplied = pendingUndos.current > 0
+            if (alreadyApplied) pendingUndos.current -= 1
+            const next = alreadyApplied ? s : applyStepRemoval(s, msg.i)
+            // The worker is authoritative about indices — prefer its snapshot.
+            return {
+              ...next,
+              steps: msg.steps ?? next.steps,
+              parameters: msg.parameters ?? next.parameters,
+            }
+          })
           break
         case 'pick_result':
           setState((s) => ({ ...s, pickResult: msg.candidate }))
@@ -223,6 +251,15 @@ export function useRecorder(workflowId: string) {
     })
   }, [])
 
+  const undoStep = useCallback(
+    (i: number) => {
+      send({ t: 'undo_step', i })
+      pendingUndos.current += 1
+      setState((s) => applyStepRemoval(s, i))
+    },
+    [send],
+  )
+
   const undoPick = useCallback(() => {
     setState((s) => ({ ...s, pickResult: null, lastCompiled: null }))
   }, [])
@@ -281,7 +318,7 @@ export function useRecorder(workflowId: string) {
     wizardFields: state.wizardFields,
     lastCompiled: state.lastCompiled,
     setMode,
-    undoStep: (i: number) => send({ t: 'undo_step', i }),
+    undoStep,
     bringToFront: () => send({ t: 'bring_to_front' }),
     markParam: (stepI: number, name: string, type?: string, description?: string | null) =>
       send({ t: 'mark_param', step_i: stepI, name, type, description }),
