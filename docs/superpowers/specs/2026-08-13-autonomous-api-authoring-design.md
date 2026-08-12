@@ -111,11 +111,20 @@ out. An agent loop needs **multi-turn conversation with tool calls** and **image
 for screenshots.
 
 Add a sibling primitive on the same client, behind the same provider switch
-(`llm_provider`, currently defaulting to `gemini`). Gemini's OpenAI-compatible endpoint supports
-both function calling and base64 image parts; both should be verified early, as the whole design
-rests on them.
+(`llm_provider`, currently defaulting to `gemini`).
+
+**Verified empirically 2026-08-13** against `gemini-flash-lite-latest`: tool calls are returned,
+multi-turn (`assistant.tool_calls` → `role: tool` → next turn) works, `usage.total_tokens` is
+populated, and — the question the design most depended on — **tools and a base64 image part coexist
+in a single request**. Arguments arrive as clean JSON strings that `_extract_json` parses.
 
 `complete_json` and its callers stay untouched.
+
+**Model choice is a separate decision from capability.** The configured model is the weakest
+available tier, chosen for bounded structured extraction rather than for agentic browsing across
+~25 turns of an unfamiliar site. Autonomous success rate will track model capability more than any
+other factor in this design, so the agent loop gets its own `AGENT_MODEL` setting and can be raised
+without making every spec-enrichment call more expensive.
 
 ### 4.3 Credential redaction on every LLM path
 

@@ -242,7 +242,8 @@ directly to a search URL."
 - Produces, in `app.llm.client`:
   - `@dataclass ToolCall: id: str, name: str, arguments: dict`
   - `@dataclass TurnResult: tool_calls: list[ToolCall], text: str | None, usage_tokens: int`
-  - `async def complete_tools(system: str, messages: list[dict], tools: list[dict], max_tokens: int = 4000) -> TurnResult`
+  - `async def complete_tools(system: str, messages: list[dict], tools: list[dict], max_tokens: int = 4000, model: str | None = None) -> TurnResult`
+  - `AGENT_MODEL_NAME: str` — the agent loop's model, falling back to `MODEL_NAME`
   - `def user_message(text: str, screenshot_b64: str | None = None) -> dict`
   - `def tool_result_message(tool_call_id: str, content: str) -> dict`
 
@@ -333,6 +334,27 @@ def test_tool_result_message_shape():
     assert tool_result_message("c1", "ok") == {
         "role": "tool", "tool_call_id": "c1", "content": "ok",
     }
+
+
+@pytest.mark.asyncio
+async def test_complete_tools_honors_the_model_override():
+    resp = _fake_response(content="ok")
+    create = AsyncMock(return_value=resp)
+    with patch("app.llm.client.client.chat.completions.create", create):
+        await complete_tools("sys", [], [], model="some-stronger-model")
+
+    assert create.call_args.kwargs["model"] == "some-stronger-model"
+
+
+@pytest.mark.asyncio
+async def test_empty_content_with_a_tool_call_is_not_treated_as_a_reply():
+    # Gemini returns content='' (not None) alongside tool_calls.
+    resp = _fake_response(tool_calls=[_fake_tool_call("c1", "done", "{}")], content="")
+    with patch("app.llm.client.client.chat.completions.create", AsyncMock(return_value=resp)):
+        result = await complete_tools("sys", [], [])
+
+    assert result.tool_calls[0].name == "done"
+    assert result.tool_calls[0].arguments == {}
 ```
 
 - [ ] **Step 2: Run the test to verify it fails**
@@ -378,11 +400,19 @@ def tool_result_message(tool_call_id: str, content: str) -> dict:
     return {"role": "tool", "tool_call_id": tool_call_id, "content": content}
 
 
+# The agent loop drives an unfamiliar website across ~25 turns — a much harder
+# task than the bounded structured extraction the default model was chosen for.
+# Kept separate so the agent can be raised to a stronger model without making
+# every spec-enrichment and field-naming call more expensive.
+AGENT_MODEL_NAME = settings.agent_model or MODEL_NAME
+
+
 async def complete_tools(
     system: str,
     messages: list[dict],
     tools: list[dict],
     max_tokens: int = 4000,
+    model: str | None = None,
 ) -> TurnResult:
     """One turn of a tool-calling conversation.
 
@@ -392,7 +422,7 @@ async def complete_tools(
     _extract_json rather than a bare json.loads.
     """
     kwargs: dict = {
-        "model": MODEL_NAME,
+        "model": model or AGENT_MODEL_NAME,
         "messages": [{"role": "system", "content": system}, *messages],
         "temperature": 0.2,
         "max_tokens": max_tokens,
@@ -434,10 +464,26 @@ Add to the imports at the top of the file:
 from dataclasses import dataclass
 ```
 
+Add the setting to `backend/app/config.py`, next to the other LLM fields:
+
+```python
+    # Empty = use the same model as everything else. Set this to give the
+    # autonomous agent loop a stronger model than the extraction calls need.
+    agent_model: str = ""
+```
+
+and document it in `.env.example`:
+
+```
+# Optional: stronger model for the autonomous agent loop only.
+# Leave blank to reuse GEMINI_MODEL.
+AGENT_MODEL=
+```
+
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `cd backend; uv run pytest tests/test_llm_tools.py -v`
-Expected: PASS (7 passed)
+Expected: PASS (9 passed)
 
 - [ ] **Step 5: Verify existing LLM tests still pass**
 
@@ -3670,6 +3716,17 @@ These are known-unresolved and must be settled during implementation, not silent
    **However, the probe found an ordering hazard that the plan now depends on handling.** `fill` is emitted on a 400 ms debounce ([injected.js:313](../../../backend/app/recorder/injected.js)) while `click` emits synchronously. A fill immediately followed by a click is recorded as **`click` then `fill`** — replay would click Search before typing the query. This is why `POST_ACTION_SETTLE_MS` (Task 7) must stay above 400 ms, and why Task 7 carries an explicit ordering regression test. A human never types and clicks within 400 ms; an agent does it on every search.
 
    Two harness notes for whoever re-runs this: use `page.goto()`, **not** `page.set_content()` — `set_content` does `document.open()/write()/close()`, which wipes the document-level listeners the init script installed, and every event silently vanishes. And `injected.js` sets `window.__abMode = 'record'` itself (line 5), so no extra setup is needed.
-2. **Gemini tool-calling support.** Task 2's tests mock the provider. Before Task 9, make one real `complete_tools` call against the configured provider and confirm `tool_calls` come back populated.
+2. ~~**Gemini tool-calling support.**~~ **RESOLVED — verified empirically 2026-08-13** against `gemini-flash-lite-latest` on `https://generativelanguage.googleapis.com/v1beta/openai/`:
+
+   | Question | Result |
+   |---|---|
+   | Are `tool_calls` returned? | Yes — `fill(ref="ref_0", value="television")` |
+   | Do tools and an **image part** coexist in one request? | **Yes** — a 7.7 KB PNG alongside the tool schemas produced the same correct call |
+   | Multi-turn (`assistant.tool_calls` → `role: tool` → next turn)? | Yes — correctly followed up with `done` |
+   | `usage.total_tokens` populated? | Yes |
+
+   Arguments arrive as clean JSON strings; `_extract_json` parses them, including `{}` for no-argument tools. `message.content` comes back as `''` rather than `None` when a tool is called — harmless, but do not treat empty content as "no response".
+
+   **Open decision, not a blocker:** `gemini-flash-lite-latest` is the weakest available tier and was chosen for bounded structured extraction (see AI_AUTHORING_PLAN.md's reasoning about non-thinking instruct models), not for agentic browsing across ~25 turns on an unfamiliar site. Autonomous success rate will track model capability more than any other single factor here. Task 2 therefore adds a separate `AGENT_MODEL` setting so the agent can be raised without making every spec-enrichment call more expensive. **Decide what to point it at before running Task 19's integration test** — that test's result is only meaningful for the model it ran against.
 3. **`plans` module accessor names.** Tasks 4 and 5 use `ensure_seeded`, `effective_tier`, and `_settings_for` as placeholders. Read `app/services/plans.py` first and use the real names.
 4. **`user.is_super_admin`.** Task 5 assumes this property exists. Confirm against `app/models/user.py`; the codebase may express it as a role comparison.
