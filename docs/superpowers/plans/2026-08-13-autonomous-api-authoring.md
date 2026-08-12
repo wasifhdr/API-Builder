@@ -3683,6 +3683,15 @@ cd backend && RUN_AGENT_INTEGRATION=1 uv run pytest tests/test_agent_integration
 
 Record in the PR description: wall-clock time, attempts used, and total `token_usage`. Those numbers are what `agent_run_price_bdt` should be calibrated against.
 
+**Run it once per `AGENT_MODEL` candidate**, not once overall. All candidates are API-compatible (see Open Items), so the only thing separating them is agentic competence on a real site — which is precisely what this test measures and nothing earlier does. Record a row per model:
+
+| `AGENT_MODEL` | succeeded | attempts | wall clock | tokens |
+|---|---|---|---|---|
+| `gemini-3.5-flash-lite` | | | | |
+| `gemma-4-31b-it` | | | | |
+
+The cheapest model that clears verification on the first or second attempt is the right default; token cost per run is secondary to whether the run succeeds at all, since a failed run is refunded and earns nothing.
+
 - [ ] **Step 3: Confirm it is skipped by default**
 
 Run: `cd backend; uv run pytest tests/test_agent_integration.py -v`
@@ -3728,5 +3737,22 @@ These are known-unresolved and must be settled during implementation, not silent
    Arguments arrive as clean JSON strings; `_extract_json` parses them, including `{}` for no-argument tools. `message.content` comes back as `''` rather than `None` when a tool is called — harmless, but do not treat empty content as "no response".
 
    **Open decision, not a blocker:** `gemini-flash-lite-latest` is the weakest available tier and was chosen for bounded structured extraction (see AI_AUTHORING_PLAN.md's reasoning about non-thinking instruct models), not for agentic browsing across ~25 turns on an unfamiliar site. Autonomous success rate will track model capability more than any other single factor here. Task 2 therefore adds a separate `AGENT_MODEL` setting so the agent can be raised without making every spec-enrichment call more expensive. **Decide what to point it at before running Task 19's integration test** — that test's result is only meaningful for the model it ran against.
+
+   **Verified `AGENT_MODEL` candidates (2026-08-13).** Every one of these returns tool calls *and* accepts a screenshot image part in the same request, so all are drop-in swappable:
+
+   | Model | tools | tools + image |
+   |---|---|---|
+   | `gemini-flash-lite-latest` (current) | ✅ | ✅ |
+   | `gemini-3.5-flash-lite` | ✅ | ✅ |
+   | `gemini-3.1-flash-lite` | ✅ | ✅ |
+   | `gemma-4-31b-it` | ✅ | ✅ |
+   | `gemma-4-26b-a4b-it` | ✅ | ✅ |
+   | `gemini-flash-latest` | ✅ | ✅ |
+
+   **What this table does and does not tell you.** It establishes *API compatibility only* — every candidate passed a trivial one-step task. It says nothing about which model can actually drive waltonbd.com across 25 turns, recover from a failed check, and avoid the hardcoded-URL trap. That is exactly what Task 19 measures, and it should be re-run per candidate rather than once.
+
+   Suggested ladder if the default underperforms: `gemini-3.5-flash-lite` → `gemma-4-31b-it` → `gemini-flash-latest`.
+
+   **Pin an explicit version, not a `-latest` alias.** `gemini-flash-lite-latest` silently re-points as Google ships new versions, so an integration result recorded against it is not reproducible and a working agent can regress without any change on your side.
 3. **`plans` module accessor names.** Tasks 4 and 5 use `ensure_seeded`, `effective_tier`, and `_settings_for` as placeholders. Read `app/services/plans.py` first and use the real names.
 4. **`user.is_super_admin`.** Task 5 assumes this property exists. Confirm against `app/models/user.py`; the codebase may express it as a role comparison.
