@@ -1440,6 +1440,12 @@ from app.agent.observe import Observation, RefNotFound, observe, resolve_ref
 
 log = logging.getLogger("agent")
 
+# MUST stay above injected.js's 400ms fill debounce. Verified empirically:
+# `fill` is emitted on a 400ms timer while `click` emits synchronously, so an
+# agent that fills and immediately clicks gets the two steps recorded in the
+# WRONG ORDER — replay would then click Search before typing the query. A human
+# never types and clicks inside 400ms; an agent does it every time. Do not
+# lower this without re-running the ordering test.
 POST_ACTION_SETTLE_MS = 1200
 
 
@@ -1538,16 +1544,106 @@ async def dispatch(page: Page, name: str, arguments: dict, marks: list[str]) -> 
 Run: `cd backend; uv run pytest tests/test_agent_tools.py -v`
 Expected: PASS (8 passed)
 
-- [ ] **Step 5: Lint and commit**
+- [ ] **Step 5: Write the step-ordering regression test**
+
+This is the test that protects the settle constant. It drives the real `injected.js` and asserts that agent-issued actions land in the recorder **in the order they were issued**. Without the settle, `fill` (400 ms debounce) arrives *after* a following `click` (synchronous), and replay clicks Search before typing.
+
+Create `backend/tests/test_agent_recorder_capture.py`:
+
+```python
+import pytest
+from playwright.async_api import async_playwright
+
+from app.agent.tools import POST_ACTION_SETTLE_MS
+from app.recorder.session import INJECTED_JS_PATH
+
+
+def test_settle_exceeds_the_fill_debounce():
+    """injected.js debounces `fill` by 400ms. Dropping below that reorders steps."""
+    assert POST_ACTION_SETTLE_MS > 400
+
+
+@pytest.fixture
+def probe_url(fixture_site_url):
+    return f"{fixture_site_url}/search.html"
+
+
+async def _recording_page(pw, captured, url):
+    browser = await pw.chromium.launch(headless=True, args=["--disable-gpu"])
+    context = await browser.new_context()
+    await context.expose_binding("__abEmit", lambda _s, event: captured.append(event))
+    await context.add_init_script(INJECTED_JS_PATH.read_text(encoding="utf-8"))
+    page = await context.new_page()
+    # goto, NOT set_content: set_content does document.open()/write()/close(),
+    # which wipes the document listeners the init script installed.
+    await page.goto(url)
+    return browser, page
+
+
+@pytest.mark.asyncio
+async def test_playwright_actions_are_captured_with_selectors(probe_url):
+    captured: list[dict] = []
+    async with async_playwright() as pw:
+        browser, page = await _recording_page(pw, captured, probe_url)
+        await page.fill("#q", "television")
+        await page.wait_for_timeout(POST_ACTION_SETTLE_MS)
+        await browser.close()
+
+    assert len(captured) == 1
+    assert captured[0]["type"] == "fill"
+    assert captured[0]["value"] == "television"
+    assert captured[0]["selectors"], "fill was captured without selector candidates"
+
+
+@pytest.mark.asyncio
+async def test_settling_between_actions_preserves_order(probe_url):
+    captured: list[dict] = []
+    async with async_playwright() as pw:
+        browser, page = await _recording_page(pw, captured, probe_url)
+        await page.fill("#q", "television")
+        await page.wait_for_timeout(POST_ACTION_SETTLE_MS)  # what dispatch() does
+        await page.click("button[type=submit]")
+        await page.wait_for_timeout(POST_ACTION_SETTLE_MS)
+        await browser.close()
+
+    assert [e["type"] for e in captured] == ["fill", "click"]
+
+
+@pytest.mark.asyncio
+async def test_without_settling_the_order_inverts(probe_url):
+    """Documents the failure this constant exists to prevent. If this ever stops
+    inverting, injected.js's debounce changed and the settle can be revisited."""
+    captured: list[dict] = []
+    async with async_playwright() as pw:
+        browser, page = await _recording_page(pw, captured, probe_url)
+        await page.fill("#q", "television")
+        await page.click("button[type=submit]")  # no settle
+        await page.wait_for_timeout(1000)
+        await browser.close()
+
+    assert [e["type"] for e in captured] == ["click", "fill"]
+```
+
+- [ ] **Step 6: Run the ordering tests**
+
+Run: `cd backend; uv run pytest tests/test_agent_recorder_capture.py -v`
+Expected: PASS (4 passed)
+
+- [ ] **Step 7: Lint and commit**
 
 ```bash
 cd backend && uv run ruff check app
-git add backend/app/agent/tools.py backend/tests/test_agent_tools.py
+git add backend/app/agent/tools.py backend/tests/test_agent_tools.py backend/tests/test_agent_recorder_capture.py
 git commit -m "feat(agent): tool schemas and dispatch
 
 Tool failures are reported back to the model as text rather than raised:
 a bad ref is a recoverable mistake, and killing the session for it would
-throw away the whole authoring attempt."
+throw away the whole authoring attempt.
+
+Settles POST_ACTION_SETTLE_MS above injected.js's 400ms fill debounce.
+Without it, a fill followed immediately by a click is recorded in the
+wrong order and replay clicks Search before typing the query — a hazard
+a human recorder never hits but an agent hits on every search."
 ```
 
 ---
@@ -3560,7 +3656,20 @@ git commit -m "test(agent): opt-in end-to-end run against waltonbd.com"
 
 These are known-unresolved and must be settled during implementation, not silently assumed:
 
-1. **Does `fill` get captured by `injected.js`?** The entire "agent drives the recorder" premise assumes it does. **Verify this before Task 14** with a throwaway script that drives a Playwright `fill()` against a live `RecordingSession` and inspects `session.steps`. If it does not fire, the agent must emit `fill` steps directly and pass them through `selector_compiler.compile_from_pick` — a contained change to Task 9, but one that must be discovered early rather than late.
+1. ~~**Does `fill` get captured by `injected.js`?**~~ **RESOLVED — verified empirically 2026-08-13.** All four action types are captured with full ranked selector candidates when driven by Playwright:
+
+   | Playwright call | Recorded step | Example selectors |
+   |---|---|---|
+   | `fill()` | `fill` | `#q`, `[name="q"]`, `form > input` |
+   | `click()` | `click` | `#go`, `form > button`, `button:has-text("Go")` |
+   | `select_option()` | `select_option` | `#s`, `form > select` |
+   | `press()` | `press` | `#q`, `[name="q"]` |
+
+   `isTrusted` was never a factor — Playwright's `fill()` produces a **trusted** input event, and `injected.js` does not filter on it in any case.
+
+   **However, the probe found an ordering hazard that the plan now depends on handling.** `fill` is emitted on a 400 ms debounce ([injected.js:313](../../../backend/app/recorder/injected.js)) while `click` emits synchronously. A fill immediately followed by a click is recorded as **`click` then `fill`** — replay would click Search before typing the query. This is why `POST_ACTION_SETTLE_MS` (Task 7) must stay above 400 ms, and why Task 7 carries an explicit ordering regression test. A human never types and clicks within 400 ms; an agent does it on every search.
+
+   Two harness notes for whoever re-runs this: use `page.goto()`, **not** `page.set_content()` — `set_content` does `document.open()/write()/close()`, which wipes the document-level listeners the init script installed, and every event silently vanishes. And `injected.js` sets `window.__abMode = 'record'` itself (line 5), so no extra setup is needed.
 2. **Gemini tool-calling support.** Task 2's tests mock the provider. Before Task 9, make one real `complete_tools` call against the configured provider and confirm `tool_calls` come back populated.
 3. **`plans` module accessor names.** Tasks 4 and 5 use `ensure_seeded`, `effective_tier`, and `_settings_for` as placeholders. Read `app/services/plans.py` first and use the real names.
 4. **`user.is_super_admin`.** Task 5 assumes this property exists. Confirm against `app/models/user.py`; the codebase may express it as a role comparison.

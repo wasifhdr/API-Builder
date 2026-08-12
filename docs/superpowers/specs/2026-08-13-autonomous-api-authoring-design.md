@@ -48,9 +48,16 @@ for free** — ranked selector candidates, step DSL, live WebSocket panel, and u
 The agent never authors a selector. It supplies intent; the existing selector compiler supplies
 durability.
 
-> **Assumption to verify during implementation:** that `fill` specifically is captured. It depends
-> on which events `injected.js` listens for (`input` / `change` / `blur`). `click` and
-> `framenavigated` are confirmed by inspection.
+> **Verified empirically 2026-08-13.** `fill`, `click`, `select_option`, and `press` are all
+> captured with full ranked selector candidates when driven by Playwright. `isTrusted` is not a
+> factor — Playwright's `fill()` produces a trusted input event, and `injected.js` does not filter
+> on it regardless.
+>
+> The probe did surface one hazard the implementation must handle: `fill` is emitted on a **400 ms
+> debounce** while `click` emits synchronously, so a fill immediately followed by a click is
+> recorded in the **wrong order** — replay would click Search before typing the query. A human
+> never types and clicks that fast; an agent does it on every search. The agent's action loop
+> therefore settles longer than the debounce between tool calls, with a regression test pinning it.
 
 ---
 
@@ -350,7 +357,8 @@ Constrained by the standing NFR: **no external-network tests.**
 
 | Risk | Mitigation |
 |---|---|
-| `fill` may not be captured by the injected recorder (§2 assumption) | Verify first; if it fails, the agent emits fill steps directly and the selector compiler validates them |
+| ~~`fill` may not be captured by the injected recorder~~ | **Retired** — verified 2026-08-13, all action types captured with selectors (§2) |
+| Agent-issued actions can be recorded out of order (`fill`'s 400 ms debounce vs `click`'s synchronous emit) | The action loop settles above the debounce between tool calls; a regression test asserts ordering and documents the inverted case |
 | Gemini's OpenAI-compat layer may not support tool calling or image parts as needed | Verify in the first implementation phase, before anything depends on it |
 | Autonomous success rate on unfamiliar sites will be well below the manual recorder's >80 % publish rate | Verify-repair loop; honest failure surface; manual fallback one click away |
 | Agent-driven browsing is more bot-detectable than a human | Retained stealth setup; reference target chosen for low protection; unchanged non-goal |
