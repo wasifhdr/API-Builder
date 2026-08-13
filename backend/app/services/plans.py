@@ -23,6 +23,8 @@ class PlanConfig:
     platform_cut_pct: Decimal
     can_cashout: bool
     max_invitees_per_api: int | None  # None = unlimited
+    agent_runs_per_day: int  # 0 = feature disabled for this tier
+    agent_run_price_bdt: Decimal
 
 
 def _defaults() -> dict[PlanTier, PlanConfig]:
@@ -31,13 +33,16 @@ def _defaults() -> dict[PlanTier, PlanConfig]:
     # or a fresh dev DB before the seed migration has run.
     return {
         PlanTier.FREE: PlanConfig(
-            PlanTier.FREE, "Free", 0, 5, False, 100, Decimal("0"), False, 1),
+            PlanTier.FREE, "Free", 0, 5, False, 100, Decimal("0"), False, 1,
+            0, Decimal("0.00")),
         PlanTier.PRO: PlanConfig(
             PlanTier.PRO, "Pro", settings.plan_price_pro_bdt, 50, True,
-            5000, Decimal("25"), False, 25),
+            5000, Decimal("25"), False, 25,
+            5, Decimal("10.00")),
         PlanTier.MAX: PlanConfig(
             PlanTier.MAX, "Max", settings.plan_price_max_bdt, None, True,
-            50000, Decimal("10"), True, None),
+            50000, Decimal("10"), True, None,
+            25, Decimal("10.00")),
     }
 
 
@@ -80,6 +85,8 @@ async def get_plans(db: AsyncSession) -> dict[PlanTier, PlanConfig]:
                 platform_cut_pct=row.platform_cut_pct,
                 can_cashout=row.can_cashout,
                 max_invitees_per_api=row.max_invitees_per_api,
+                agent_runs_per_day=row.agent_runs_per_day,
+                agent_run_price_bdt=row.agent_run_price_bdt,
             )
 
     _cache = plans
@@ -90,3 +97,11 @@ async def get_plans(db: AsyncSession) -> dict[PlanTier, PlanConfig]:
 async def plan_for(tier: PlanTier, db: AsyncSession) -> PlanConfig:
     plans = await get_plans(db)
     return plans[tier]
+
+
+async def agent_runs_per_day(tier: PlanTier, db: AsyncSession) -> int:
+    return (await plan_for(tier, db)).agent_runs_per_day
+
+
+async def agent_run_price(tier: PlanTier, db: AsyncSession) -> Decimal:
+    return (await plan_for(tier, db)).agent_run_price_bdt

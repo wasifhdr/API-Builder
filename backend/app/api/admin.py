@@ -652,6 +652,12 @@ async def update_plan_settings(
             platform_cut_pct=current.platform_cut_pct,
             can_cashout=current.can_cashout,
             max_invitees_per_api=current.max_invitees_per_api,
+            # Carried over like every other field above: without this, seeding
+            # an unpatched PRO/MAX row here would silently reset agent runs to
+            # the column default (0 / disabled) instead of the tier's actual
+            # effective value, the moment an admin edits any unrelated field.
+            agent_runs_per_day=current.agent_runs_per_day,
+            agent_run_price_bdt=current.agent_run_price_bdt,
         )
         db.add(row)
 
