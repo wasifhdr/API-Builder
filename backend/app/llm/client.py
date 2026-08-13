@@ -1,5 +1,6 @@
 import json
 import re
+from dataclasses import dataclass
 
 from openai import AsyncOpenAI
 
@@ -129,3 +130,94 @@ async def complete_json(
         detail = extra.get("message") or extra.get("error") or "gateway returned no choices"
         raise RuntimeError(f"LLM gateway error: {detail}")
     return _extract_json(resp.choices[0].message.content)
+
+
+@dataclass(frozen=True)
+class ToolCall:
+    id: str
+    name: str
+    arguments: dict
+
+
+@dataclass(frozen=True)
+class TurnResult:
+    tool_calls: list[ToolCall]
+    text: str | None
+    usage_tokens: int
+
+
+def user_message(text: str, screenshot_b64: str | None = None) -> dict:
+    """One user turn, optionally carrying a screenshot as an inline image part.
+    Mirrors the image handling complete_json already uses."""
+    if screenshot_b64 is None:
+        return {"role": "user", "content": text}
+    return {
+        "role": "user",
+        "content": [
+            {"type": "text", "text": text},
+            {"type": "image_url",
+             "image_url": {"url": f"data:image/png;base64,{screenshot_b64}"}},
+        ],
+    }
+
+
+def tool_result_message(tool_call_id: str, content: str) -> dict:
+    return {"role": "tool", "tool_call_id": tool_call_id, "content": content}
+
+
+# The agent loop drives an unfamiliar website across ~25 turns — a much harder
+# task than the bounded structured extraction the default model was chosen for.
+# Kept separate so the agent can be raised to a stronger model without making
+# every spec-enrichment and field-naming call more expensive.
+AGENT_MODEL_NAME = settings.agent_model or MODEL_NAME
+
+
+async def complete_tools(
+    system: str,
+    messages: list[dict],
+    tools: list[dict],
+    max_tokens: int = 4000,
+    model: str | None = None,
+) -> TurnResult:
+    """One turn of a tool-calling conversation.
+
+    The caller owns the message list and appends to it across turns. Tool call
+    arguments arrive as a JSON *string* and, like every other structured output
+    from these providers, can be fence- or think-wrapped — so they go through
+    _extract_json rather than a bare json.loads.
+    """
+    kwargs: dict = {
+        "model": model or AGENT_MODEL_NAME,
+        "messages": [{"role": "system", "content": system}, *messages],
+        "temperature": 0.2,
+        "max_tokens": max_tokens,
+    }
+    if tools:
+        kwargs["tools"] = tools
+        kwargs["tool_choice"] = "auto"
+
+    resp = await client.chat.completions.create(**kwargs)
+
+    if not resp.choices:
+        extra = resp.model_dump()
+        detail = extra.get("message") or extra.get("error") or "gateway returned no choices"
+        raise RuntimeError(f"LLM gateway error: {detail}")
+
+    message = resp.choices[0].message
+    calls: list[ToolCall] = []
+    for raw in (getattr(message, "tool_calls", None) or []):
+        try:
+            arguments = _extract_json(raw.function.arguments)
+        except ValueError:
+            # A malformed argument payload is one bad turn, not a dead run —
+            # surface it as an empty-argument call so the loop can tell the
+            # model it failed rather than crashing the session.
+            arguments = {}
+        calls.append(ToolCall(id=raw.id, name=raw.function.name, arguments=arguments))
+
+    usage = getattr(resp, "usage", None)
+    return TurnResult(
+        tool_calls=calls,
+        text=message.content,
+        usage_tokens=getattr(usage, "total_tokens", 0) or 0,
+    )
