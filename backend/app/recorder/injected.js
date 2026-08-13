@@ -403,20 +403,17 @@
     return outline;
   }
 
-  document.addEventListener('click', (e) => {
-    if (window.__abMode !== 'pick' || window.__abBusy) return;
-    const el = e.target;
-    if (!(el instanceof Element)) return;
-    e.preventDefault();
-    e.stopPropagation();
-
+  // Exposes the exact pick-mode computation (stamp + rank + outline + rect)
+  // for direct reuse by the autonomous agent (app/agent/extract.py), which
+  // has an ElementHandle from its own observation rather than a live click —
+  // it calls this instead of duplicating rankSelectors/buildOutline in a
+  // second script, so agent picks are indistinguishable from human ones to
+  // the selector compiler.
+  window.__abBuildPickResult = (el) => {
+    if (!el) return null;
     const pickId = `p${++__abPickCounter}`;
     el.setAttribute('data-ab-pick', pickId);
-
     const selectors = rankSelectors(el);
-    // Generalize the positional path specifically — ranking may no longer leave
-    // it last (or include it at all) now that candidates are sorted by how
-    // unambiguous they are.
     const generalized = stripLastNthOfType(cssPath(el));
     let count = 1;
     try {
@@ -426,15 +423,21 @@
     }
     const rect = el.getBoundingClientRect();
     const preview = (el.textContent || '').trim().slice(0, 200);
-    emit({
-      type: 'pick_result',
-      pickId,
-      selectors,
-      preview,
-      count,
-      generalized,
+    return {
+      pickId, selectors, preview, count, generalized,
       outline: buildOutline(el),
       rect: { x: rect.left, y: rect.top, width: rect.width, height: rect.height },
-    });
+    };
+  };
+
+  document.addEventListener('click', (e) => {
+    if (window.__abMode !== 'pick' || window.__abBusy) return;
+    const el = e.target;
+    if (!(el instanceof Element)) return;
+    e.preventDefault();
+    e.stopPropagation();
+
+    const result = window.__abBuildPickResult(el);
+    if (result) emit({ type: 'pick_result', ...result });
   }, true);
 })();

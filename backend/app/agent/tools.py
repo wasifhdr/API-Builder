@@ -45,8 +45,10 @@ TOOL_SCHEMAS: list[dict] = [
         {"ref": {"type": "string"}, "key": {"type": "string"}}, ["ref", "key"]),
     _fn("scroll", "Scroll the page to load lazily-rendered content.",
         {"direction": {"type": "string", "enum": ["down", "up"]}}, ["direction"]),
-    _fn("mark_target", "Mark the element with the given ref as holding data the "
-        "API should extract. Mark one representative repeated item, not every item.",
+    _fn("mark_target", "Mark the element with the given ref as part of the data "
+        "the API should extract. First call: the repeating container/row "
+        "(one representative row, not every row). Then one more call per "
+        "requested field, on that field's own element within the row.",
         {"ref": {"type": "string"}}, ["ref"]),
     _fn("done", "The workflow is complete and the target data is on screen.", {}, []),
     _fn("give_up", "Stop: this task cannot be completed (for example a login wall).",

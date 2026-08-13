@@ -23,6 +23,19 @@ async def test_observe_surfaces_repeated_content_blocks(fixture_site_url, fixtur
 
 
 @pytest.mark.asyncio
+async def test_observe_surfaces_field_leaves_within_a_block(fixture_site_url, fixture_page):
+    # The extraction compiler validates a field candidate by walking UP from
+    # the marked element to its row, so the agent needs refs for the title
+    # and price text specifically — not just the enclosing <li>.
+    await fixture_page.goto(f"{fixture_site_url}/search.html?q=television")
+    obs = await observe(fixture_page, with_screenshot=False)
+
+    assert "field inside ref_" in obs.tree
+    assert "Smart Television" in obs.tree
+    assert "38000" in obs.tree
+
+
+@pytest.mark.asyncio
 async def test_observe_does_not_tag_the_dom(fixture_site_url, fixture_page):
     await fixture_page.goto(f"{fixture_site_url}/search.html")
     await observe(fixture_page, with_screenshot=False)

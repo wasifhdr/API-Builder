@@ -79,3 +79,24 @@ def test_redaction_does_not_mutate_the_input():
     steps = [{"type": "fill", "selectors": ["#password"], "value": {"literal": "hunter2"}}]
     redact_steps(steps)
     assert steps[0]["value"]["literal"] == "hunter2"
+
+
+def test_append_extract_step_adds_one_when_missing():
+    from app.agent.distill import append_extract_step
+
+    steps = append_extract_step([{"type": "goto", "url": "https://x/"}], {"main": {"mode": "list"}})
+    assert steps[-1] == {"type": "extract", "ref": "main"}
+
+
+def test_append_extract_step_is_idempotent():
+    from app.agent.distill import append_extract_step
+
+    existing = [{"type": "extract", "ref": "main"}]
+    assert append_extract_step(existing, {"main": {}}) == existing
+
+
+def test_append_extract_step_noop_without_extraction():
+    from app.agent.distill import append_extract_step
+
+    steps = [{"type": "goto", "url": "https://x/"}]
+    assert append_extract_step(steps, {}) == steps

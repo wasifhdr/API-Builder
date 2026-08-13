@@ -86,3 +86,12 @@ def bind_parameters(steps: list[dict], plan: dict) -> list[dict]:
             )
 
     return bound
+
+
+def append_extract_step(steps: list[dict], extraction: dict) -> list[dict]:
+    """Appends the terminal extract step, matching what RecordingSession does
+    at save time. Returns a new list."""
+    result = copy.deepcopy(steps)
+    if extraction.get("main") and not any(s.get("type") == "extract" for s in result):
+        result.append({"type": "extract", "ref": "main"})
+    return result
