@@ -1,8 +1,10 @@
 import asyncio
 import contextlib
 import logging
+import re
 import uuid
 from typing import Any
+from urllib.parse import quote
 
 from playwright.async_api import BrowserContext, Page, async_playwright
 
@@ -137,6 +139,27 @@ def _resolve_value(value: dict | None, params: dict) -> str:
     if "param" in value:
         return str(params.get(value["param"], ""))
     return ""
+
+
+_URL_PLACEHOLDER_RE = re.compile(r"\{([a-zA-Z_][a-zA-Z0-9_]*)\}")
+
+
+def _resolve_url(url: str, params: dict) -> str:
+    """Substitutes {param} placeholders in a goto URL with URL-encoded values.
+
+    Unlike _resolve_value (which owns a whole step value), a URL is a mix of
+    literal text and placeholders, so this is a targeted regex substitution.
+    Unknown placeholders are left verbatim rather than blanked: a URL with a
+    hole in it fails loudly at navigation instead of silently fetching the
+    wrong page.
+    """
+    def _sub(match: re.Match) -> str:
+        name = match.group(1)
+        if name not in params:
+            return match.group(0)
+        return quote(str(params[name]), safe="")
+
+    return _URL_PLACEHOLDER_RE.sub(_sub, url)
 
 
 def _merge_extraction(selector_data: Any, llm_data: Any) -> Any:
@@ -420,7 +443,8 @@ async def replay_workflow(
                     await _settle_after_nav()
 
                 if stype == "goto":
-                    await page.goto(step["url"], wait_until="domcontentloaded")
+                    target = step.get("url_template") or step["url"]
+                    await page.goto(_resolve_url(target, params), wait_until="domcontentloaded")
                 elif stype == "click":
                     locator = await _locate(page, step.get("selectors", []))
                     await locator.click()

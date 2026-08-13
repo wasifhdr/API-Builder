@@ -1,0 +1,32 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Fixture Store — Search</title>
+<body>
+  <form id="search-form" onsubmit="event.preventDefault(); go();">
+    <input id="q" name="q" type="text" placeholder="Search products">
+    <button type="submit">Search</button>
+  </form>
+  <ul id="results"></ul>
+<script>
+const CATALOG = [
+  {name: "Blue Refrigerator", price: "45000", cat: "refrigerator"},
+  {name: "Silver Refrigerator", price: "52000", cat: "refrigerator"},
+  {name: "Smart Television", price: "38000", cat: "television"},
+  {name: "Basic Television", price: "21000", cat: "television"},
+  {name: "Desk Fan", price: "3200", cat: "fan"},
+];
+function go() {
+  const q = document.getElementById("q").value;
+  location.search = "?q=" + encodeURIComponent(q);
+}
+function render() {
+  const q = (new URLSearchParams(location.search).get("q") || "").toLowerCase();
+  document.getElementById("q").value = q;
+  const hits = q ? CATALOG.filter(p => p.cat.includes(q) || p.name.toLowerCase().includes(q)) : [];
+  document.getElementById("results").innerHTML = hits.map(p =>
+    `<li class="product"><span class="title">${p.name}</span>` +
+    `<span class="price">${p.price}</span></li>`).join("");
+}
+render();
+</script>
+</body>
