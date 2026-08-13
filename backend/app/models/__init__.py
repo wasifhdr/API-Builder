@@ -1,3 +1,4 @@
+from app.models.agent_run import AgentRun, AgentRunStatus
 from app.models.api import (
     ApiAccessGrant,
     ApiInvite,
@@ -29,6 +30,8 @@ from app.models.workflow import Workflow, WorkflowStatus
 
 __all__ = [
     "Base",
+    "AgentRun",
+    "AgentRunStatus",
     "User",
     "UserRole",
     "PlanTier",

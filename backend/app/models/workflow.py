@@ -32,5 +32,12 @@ class Workflow(Base, TimestampMixin):
     sample_output: Mapped[dict | None] = mapped_column(JSONB)
     browser_settings: Mapped[dict] = mapped_column(JSONB, default=dict, server_default=text("'{}'::jsonb"))
     auth_state_encrypted: Mapped[bytes | None] = mapped_column(LargeBinary)
+    # Set when this workflow was produced by an autonomous agent run rather
+    # than a human recording. Purely so the UI can badge it; nothing in the
+    # replay or publish path reads it. Deliberately NOT a ForeignKey:
+    # agent_runs.workflow_id already points the other way, and a mutual FK
+    # creates a cycle that TRUNCATE ... CASCADE in conftest.py handles but
+    # Alembic ordering does not.
+    agent_run_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), index=True)
 
     owner: Mapped["User"] = relationship(back_populates="workflows")  # noqa: F821
