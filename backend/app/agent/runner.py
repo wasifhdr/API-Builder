@@ -3,10 +3,18 @@ import logging
 import time
 import uuid
 
-from app.agent.verify import VerifyResult
+from app.agent.distill import DistillError, append_extract_step, bind_parameters
+from app.agent.driver import drive
+from app.agent.extract import ExtractionError, build_extraction
+from app.agent.planner import build_plan
+from app.agent.verify import VerifyResult, verify_workflow
 from app.db import async_session
 from app.models.agent_run import AgentRun, AgentRunStatus
+from app.models.user import User
+from app.models.workflow import Workflow, WorkflowStatus
+from app.recorder.session import RecordingSession
 from app.redis import redis_client
+from app.services import agent_runs
 
 log = logging.getLogger("agent")
 
@@ -113,3 +121,188 @@ def build_repair_context(steps: list[dict], failure: str) -> str:
         value = (step.get("value") or {}).get("literal", "")
         lines.append(f"  {i}. {step.get('type')} {step.get('url', '')} {value}".rstrip())
     return "\n".join(lines)
+
+
+async def _finish(run_id: uuid.UUID, *, succeeded: bool, reason: str | None, tokens: int) -> None:
+    async with async_session() as db:
+        run = await db.get(AgentRun, run_id)
+        if run is None:
+            return
+        run.token_usage = tokens
+        await db.commit()
+        await agent_runs.finish_run(run, succeeded=succeeded, reason=reason, db=db)
+        await db.commit()
+    await publish(run_id, {
+        "t": "status", "state": "succeeded" if succeeded else "failed", "reason": reason,
+    })
+
+
+async def run_agent(agent_run_id: uuid.UUID) -> None:
+    """Drives an autonomous authoring run end to end: plan, confirm, then
+    drive -> distill -> extract -> verify, repairing with a strategy hint on
+    failure up to MAX_ATTEMPTS or WALL_CLOCK_SECONDS, whichever comes first.
+
+    Runs entirely inside the worker's jobs:agent handler — this IS the
+    recording session (it consumes the single recording slot), so it drives a
+    real headless RecordingSession rather than talking to one over Redis.
+    """
+    started = time.monotonic()
+
+    async with async_session() as db:
+        run = await db.get(AgentRun, agent_run_id)
+        if run is None:
+            return
+        user = await db.get(User, run.user_id)
+        prompt = run.prompt
+        user_id = run.user_id
+
+    if user is None:
+        await _finish(agent_run_id, succeeded=False, reason="user not found", tokens=0)
+        return
+
+    # --- Plan ---
+    await _set_status(agent_run_id, AgentRunStatus.PLANNING)
+    try:
+        plan = await build_plan(prompt)
+    except Exception as exc:  # noqa: BLE001 - any planning failure (PlanError or LLM error) ends the run
+        log.warning("agent %s planning failed: %s", agent_run_id, exc)
+        await _finish(agent_run_id, succeeded=False, reason=f"planning failed: {exc}", tokens=0)
+        return
+
+    async with async_session() as db:
+        run = await db.get(AgentRun, agent_run_id)
+        run.plan = plan
+        run.resolved_url = plan["url"]
+        await db.commit()
+
+    # --- Await user confirmation of the resolved URL ---
+    await _set_status(agent_run_id, AgentRunStatus.AWAITING_CONFIRM, resolved_url=plan["url"])
+    if not await await_url_confirmation(agent_run_id):
+        await _finish(
+            agent_run_id, succeeded=False,
+            reason="user did not confirm the resolved URL", tokens=0,
+        )
+        return
+
+    # --- Create the workflow the recording session will populate ---
+    async with async_session() as db:
+        workflow = Workflow(
+            user_id=user_id,
+            name=(plan.get("summary") or prompt)[:200],
+            start_url=plan["url"],
+            status=WorkflowStatus.RECORDING,
+            agent_run_id=agent_run_id,
+        )
+        db.add(workflow)
+        await db.commit()
+        await db.refresh(workflow)
+
+        run = await db.get(AgentRun, agent_run_id)
+        run.workflow_id = workflow.id
+        await db.commit()
+
+    # --- Drive / distill / extract / verify, repairing on failure ---
+    total_tokens = 0
+    last_verify: VerifyResult | None = None
+    hint = ""
+
+    for attempt in range(1, MAX_ATTEMPTS + 1):
+        if time.monotonic() - started > WALL_CLOCK_SECONDS:
+            await _finish(
+                agent_run_id, succeeded=False, reason="exceeded the time budget",
+                tokens=total_tokens,
+            )
+            return
+
+        status = AgentRunStatus.DRIVING if attempt == 1 else AgentRunStatus.REPAIRING
+        await _set_status(agent_run_id, status, attempt=attempt)
+
+        outcome: dict = {"marks": [], "tokens": 0, "gave_up_reason": None}
+        task_plan = plan if not hint else {**plan, "summary": f"{plan.get('summary', '')}\n\n{hint}".strip()}
+
+        async def _on_progress(name, arguments, text, _run_id=agent_run_id) -> None:
+            await publish(_run_id, {"t": "step", "tool": name, "detail": text})
+
+        async def agent_driver(session, _task_plan=task_plan, _outcome=outcome) -> None:
+            result = await drive(session.page, _task_plan, on_progress=_on_progress)
+            _outcome["marks"] = result.marks
+            _outcome["tokens"] = result.tokens
+            if result.gave_up:
+                _outcome["gave_up_reason"] = result.give_up_reason
+                return
+            if result.marks:
+                try:
+                    session.extraction = await build_extraction(session.page, result.marks, plan)
+                except ExtractionError as exc:
+                    _outcome["gave_up_reason"] = f"extraction failed: {exc}"
+
+        session = RecordingSession(
+            str(workflow.id), str(user_id), headless=True, agent_driver=agent_driver,
+        )
+        await session.run()
+        total_tokens += outcome["tokens"]
+
+        if outcome["gave_up_reason"]:
+            hint = outcome["gave_up_reason"]
+            log.info("agent %s attempt %s gave up: %s", agent_run_id, attempt, hint)
+            if attempt >= MAX_ATTEMPTS:
+                await _finish(agent_run_id, succeeded=False, reason=hint, tokens=total_tokens)
+                return
+            continue
+
+        try:
+            bound_steps = bind_parameters(session.steps, plan)
+            bound_steps = append_extract_step(bound_steps, session.extraction)
+        except DistillError as exc:
+            hint = str(exc)
+            log.info("agent %s attempt %s distill failed: %s", agent_run_id, attempt, hint)
+            if attempt >= MAX_ATTEMPTS:
+                await _finish(agent_run_id, succeeded=False, reason=hint, tokens=total_tokens)
+                return
+            continue
+
+        snapshot = {"steps": bound_steps, "extraction": session.extraction}
+        await _set_status(agent_run_id, AgentRunStatus.VERIFYING, attempt=attempt)
+        verify_result = await verify_workflow(
+            snapshot, plan, session.final_sample, workflow_id=workflow.id,
+        )
+        last_verify = verify_result
+        await publish(agent_run_id, {
+            "t": "verify",
+            "checks": [
+                {"name": c.name, "passed": c.passed, "detail": c.detail} for c in verify_result.checks
+            ],
+        })
+
+        if verify_result.passed:
+            async with async_session() as db:
+                wf = await db.get(Workflow, workflow.id)
+                wf.steps = bound_steps
+                wf.extraction = session.extraction
+                wf.parameters = [
+                    {"name": p["name"], "type": p["type"], "required": p["required"],
+                     "description": p.get("description")}
+                    for p in plan["parameters"]
+                ]
+                wf.status = WorkflowStatus.READY
+                await db.commit()
+
+                run = await db.get(AgentRun, agent_run_id)
+                run.attempt = attempt
+                await db.commit()
+
+            await _finish(agent_run_id, succeeded=True, reason=None, tokens=total_tokens)
+            await publish(agent_run_id, {"t": "workflow_ready", "workflow_id": str(workflow.id)})
+            return
+
+        hint = repair_hint(verify_result)
+        log.info("agent %s attempt %s failed verify: %s", agent_run_id, attempt, hint)
+        if not should_retry(verify_result, attempt):
+            break
+
+    failure = last_verify.failure_summary() if last_verify else "verification never ran"
+    async with async_session() as db:
+        run = await db.get(AgentRun, agent_run_id)
+        run.attempt = MAX_ATTEMPTS
+        await db.commit()
+    await _finish(agent_run_id, succeeded=False, reason=failure, tokens=total_tokens)

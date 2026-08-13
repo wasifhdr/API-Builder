@@ -43,10 +43,30 @@ NAV_AFTER_INTERACTION_WINDOW_S = 4.0
 
 
 class RecordingSession:
-    def __init__(self, workflow_id: str, user_id: str, rerecord: bool = False):
+    def __init__(
+        self,
+        workflow_id: str,
+        user_id: str,
+        rerecord: bool = False,
+        headless: bool = False,
+        agent_driver=None,
+    ):
         self.workflow_id = uuid.UUID(workflow_id)
         self.user_id = uuid.UUID(user_id)
         self.rerecord = rerecord
+        # Autonomous authoring drives this same session headlessly. Headless
+        # matters for correctness, not convenience: replay is headless, so a
+        # workflow authored headful would be verified in a different browser
+        # than the one that built it.
+        self.headless = headless
+        # async callable: (session: RecordingSession) -> None. When set, this
+        # session is agent-driven — after the page reaches "ready" it runs
+        # this instead of (alongside) waiting on human WS commands, and stops
+        # the session when it returns. Kept as an injected callback rather
+        # than teaching RecordingSession about plans/LLMs: the callback owns
+        # all agent orchestration (app.agent.runner), this class only owns the
+        # browser lifecycle, exactly as it does for a human.
+        self.agent_driver = agent_driver
         self.redis = redis_client
         self.steps: list[dict] = []
         self.parameters: list[dict] = []
@@ -99,6 +119,12 @@ class RecordingSession:
             return
 
         self.use_saved_logins = bool(user.settings.get("use_saved_logins"))
+        if self.agent_driver is not None:
+            # v1 scope: the agent must never handle credentials, regardless of
+            # the owner's saved-logins setting — it stops at a login wall
+            # (drive()'s system prompt) rather than being handed a session
+            # that could carry them.
+            self.use_saved_logins = False
         channel = "chrome" if user.settings.get("recorder_channel") == "chrome" else None
         profile_dir, is_temp = get_profile_dir(self.user_id, self.use_saved_logins)
 
@@ -116,8 +142,11 @@ class RecordingSession:
                 # be captured. Same layer replay uses, so record and replay
                 # present a consistent fingerprint.
                 launch_kwargs: dict = {
-                    "headless": False,
-                    "args": ["--start-maximized", *stealth.launch_args(headless=False)],
+                    "headless": self.headless,
+                    "args": [
+                        *([] if self.headless else ["--start-maximized"]),
+                        *stealth.launch_args(headless=self.headless),
+                    ],
                     "no_viewport": True,
                 }
                 if channel:
@@ -216,6 +245,8 @@ class RecordingSession:
             asyncio.create_task(self._watchdog_loop()),
             asyncio.create_task(self._command_loop(cmd_pubsub)),
         ]
+        if self.agent_driver is not None:
+            tasks.append(asyncio.create_task(self._run_agent_driver()))
         try:
             await self._stop.wait()
         finally:
@@ -234,6 +265,22 @@ class RecordingSession:
                         self.captured_storage_state = await context.storage_state()
                     except Exception:
                         log.exception("failed to capture storage_state")
+
+    async def _run_agent_driver(self) -> None:
+        """Runs the injected agent callback, then ends the session.
+
+        Any exception is caught rather than propagated: an unhandled error
+        here must still let the session close cleanly (heartbeat/watchdog
+        cancelled, context closed) instead of hanging the worker slot — the
+        caller (app.agent.runner) reads self.steps/self.extraction after
+        run() returns and treats an empty/partial result as attempt failure.
+        """
+        try:
+            await self.agent_driver(self)
+        except Exception:
+            log.exception("agent driver failed")
+        finally:
+            self._stop.set()
 
     async def _handle_new_page(self, new_page: Page) -> None:
         # Multi-tab flows aren't supported (§15) — the worker keeps recording

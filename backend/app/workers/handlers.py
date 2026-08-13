@@ -83,6 +83,14 @@ async def record_session(payload: dict) -> None:
     ).run()
 
 
+async def agent_run(payload: dict) -> None:
+    """Autonomous authoring run. Consumes the recording slot because it IS a
+    recording session — the browser budget gains no new dimension."""
+    from app.agent.runner import run_agent
+
+    await run_agent(uuid.UUID(payload["agent_run_id"]))
+
+
 async def execute_api(payload: dict) -> None:
     execution_id = uuid.UUID(payload["execution_id"])
     api_id = uuid.UUID(payload["api_id"])

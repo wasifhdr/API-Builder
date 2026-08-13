@@ -16,6 +16,9 @@ log = logging.getLogger("worker")
 QUEUES = {  # stream -> (handler, max concurrent)
     "jobs:rec": (handlers.record_session, settings.rec_max_concurrency),
     "jobs:exec": (handlers.execute_api, settings.exec_max_concurrency),
+    # Shares the recorder's one-at-a-time budget: an agent run IS a recording
+    # session, and only one browser may own the recorder profile at a time.
+    "jobs:agent": (handlers.agent_run, settings.rec_max_concurrency),
     # LLM job concurrency pinned to 1 (project rule): serialize generations so
     # the single hosted-model quota isn't fanned out across parallel requests.
     # One stream for every kind of LLM work, dispatched inside llm_job, so that

@@ -53,10 +53,10 @@ def _task_brief(plan: dict) -> str:
     fields = ", ".join(f["name"] for f in plan["fields"])
     return (
         f"Task: {plan.get('summary') or 'build the described API'}\n"
-        f"Start URL: {plan['url']}\n"
+        f"You are already at the start URL ({plan['url']}) — the observation "
+        "below shows the current page. Do not navigate there again.\n"
         f"Parameters to exercise:\n{params or '- (none)'}\n"
-        f"Data fields the API must return: {fields}\n\n"
-        "Begin by navigating to the start URL."
+        f"Data fields the API must return: {fields}"
     )
 
 
