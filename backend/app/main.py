@@ -6,6 +6,7 @@ from sqlalchemy import text
 
 from app.api import (
     admin,
+    agent,
     apis,
     auth,
     billing,
@@ -67,6 +68,7 @@ app.include_router(me.router, prefix="/api")
 app.include_router(profile.router, prefix="/api")
 app.include_router(billing.router, prefix="/api")
 app.include_router(recordings.router, prefix="/api")
+app.include_router(agent.router, prefix="/api")
 app.include_router(workflows.router, prefix="/api")
 app.include_router(apis.router, prefix="/api")
 app.include_router(keys.router, prefix="/api")

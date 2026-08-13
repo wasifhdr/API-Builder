@@ -4,8 +4,11 @@ import uuid
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
+from app.agent.runner import cmd_channel as agent_cmd_channel
+from app.agent.runner import evt_channel as agent_evt_channel
 from app.core.deps import SESSION_COOKIE
 from app.db import async_session
+from app.models.agent_run import AgentRun
 from app.models.workflow import Workflow, WorkflowStatus
 from app.redis import redis_client
 
@@ -122,6 +125,79 @@ async def recording_ws(websocket: WebSocket, workflow_id: uuid.UUID) -> None:
         asyncio.create_task(ws_to_pubsub()),
         asyncio.create_task(heartbeat_watch()),
     ]
+    try:
+        await stop.wait()
+    finally:
+        for t in tasks:
+            t.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        await pubsub.unsubscribe(evt_channel)
+        await pubsub.aclose()
+        try:
+            await websocket.close()
+        except Exception:
+            pass
+
+
+@router.websocket("/ws/agent/{run_id}")
+async def agent_ws(websocket: WebSocket, run_id: uuid.UUID) -> None:
+    """Dumb bridge for an agent run's progress channel — same ownership-check
+    and cmd/evt pubsub pattern as recording_ws, deliberately without its
+    heartbeat/died-detection machinery: a stuck run is caught by the
+    reconciliation sweep (app.workers.periodic) via AgentRun.status directly,
+    not by a live socket watching a browser heartbeat key."""
+    sid = websocket.cookies.get(SESSION_COOKIE)
+    user_id: uuid.UUID | None = None
+    if sid:
+        user_id_str = await redis_client.hget(f"sess:{sid}", "user_id")
+        if user_id_str:
+            user_id = uuid.UUID(user_id_str)
+
+    if user_id is None:
+        await websocket.close(code=4401)
+        return
+
+    async with async_session() as db:
+        run = await db.get(AgentRun, run_id)
+
+    if run is None or run.user_id != user_id:
+        await websocket.close(code=4404)
+        return
+
+    await websocket.accept()
+
+    evt_channel = agent_evt_channel(run_id)
+    cmd_channel = agent_cmd_channel(run_id)
+
+    pubsub = redis_client.pubsub()
+    await pubsub.subscribe(evt_channel)
+
+    stop = asyncio.Event()
+
+    async def pubsub_to_ws() -> None:
+        try:
+            async for message in pubsub.listen():
+                if message["type"] != "message":
+                    continue
+                await websocket.send_text(message["data"])
+        except Exception:
+            pass
+        finally:
+            stop.set()
+
+    async def ws_to_pubsub() -> None:
+        try:
+            while True:
+                data = await websocket.receive_text()
+                await redis_client.publish(cmd_channel, data)
+        except WebSocketDisconnect:
+            pass
+        except Exception:
+            pass
+        finally:
+            stop.set()
+
+    tasks = [asyncio.create_task(pubsub_to_ws()), asyncio.create_task(ws_to_pubsub())]
     try:
         await stop.wait()
     finally:
