@@ -1,0 +1,114 @@
+import json
+import logging
+from dataclasses import dataclass, field
+
+from playwright.async_api import Page
+
+from app.agent.observe import observe
+from app.agent.tools import TOOL_SCHEMAS, dispatch
+from app.llm.client import complete_tools, tool_result_message, user_message
+
+log = logging.getLogger("agent")
+
+DRIVE_SYSTEM = (
+    "You are building a reusable web API by driving a real browser.\n\n"
+    "Your job: perform the described task once, using the example values given, "
+    "then mark the data the API should return and call done.\n\n"
+    "Critical rules:\n"
+    "- Reach results by INTERACTING with the page (type into the search box, "
+    "click the button). Do NOT navigate straight to a result URL you guessed — "
+    "that produces an API that returns the same data for every input, which "
+    "fails verification.\n"
+    "- Use the exact example value given for each parameter, so the value can "
+    "be recognised and turned into a parameter afterwards.\n"
+    "- Call mark_target on ONE representative repeated item, not on every item.\n"
+    "- Refs come from the most recent observation only. After any navigation, "
+    "the previous refs are void.\n"
+    "- If the task needs a login, call give_up — you must never enter credentials."
+)
+
+
+@dataclass
+class DriveResult:
+    marks: list[str] = field(default_factory=list)
+    gave_up: bool = False
+    give_up_reason: str | None = None
+    turns: int = 0
+    tokens: int = 0
+
+
+def _task_brief(plan: dict) -> str:
+    params = "\n".join(
+        f"- {p['name']} ({p['type']}): use the value {p['drive_value']!r}"
+        for p in plan["parameters"]
+    )
+    fields = ", ".join(f["name"] for f in plan["fields"])
+    return (
+        f"Task: {plan.get('summary') or 'build the described API'}\n"
+        f"Start URL: {plan['url']}\n"
+        f"Parameters to exercise:\n{params or '- (none)'}\n"
+        f"Data fields the API must return: {fields}\n\n"
+        "Begin by navigating to the start URL."
+    )
+
+
+async def drive(page: Page, plan: dict, max_turns: int = 25, on_progress=None) -> DriveResult:
+    """Runs the agent's tool-calling loop against a live page.
+
+    The page belongs to a live RecordingSession, so every action taken here is
+    captured as a workflow step with ranked selectors by the injected recorder —
+    this function never builds a selector itself.
+    """
+    result = DriveResult()
+    marks: list[str] = result.marks
+
+    observation = await observe(page)
+    messages: list[dict] = [
+        user_message(f"{_task_brief(plan)}\n\n{observation.tree}", observation.screenshot_b64)
+    ]
+
+    for _ in range(max_turns):
+        turn = await complete_tools(DRIVE_SYSTEM, messages, TOOL_SCHEMAS)
+        result.turns += 1
+        result.tokens += turn.usage_tokens
+
+        if not turn.tool_calls:
+            # A text-only turn is the model thinking out loud; nudge it back to
+            # acting rather than ending the run.
+            messages.append({"role": "assistant", "content": turn.text or ""})
+            messages.append(user_message("Call a tool to continue, or call give_up."))
+            continue
+
+        messages.append({
+            "role": "assistant",
+            "content": turn.text,
+            "tool_calls": [
+                {"id": c.id, "type": "function",
+                 "function": {"name": c.name, "arguments": json.dumps(c.arguments)}}
+                for c in turn.tool_calls
+            ],
+        })
+
+        finished = False
+        for call in turn.tool_calls:
+            outcome = await dispatch(page, call.name, call.arguments, marks)
+            if on_progress is not None:
+                await on_progress(call.name, call.arguments, outcome.text)
+
+            messages.append(tool_result_message(call.id, outcome.text))
+
+            if outcome.gave_up:
+                result.gave_up = True
+                result.give_up_reason = outcome.text
+            if outcome.finished:
+                finished = True
+                break
+            if outcome.observation is not None:
+                messages.append(
+                    user_message(outcome.observation.tree, outcome.observation.screenshot_b64)
+                )
+
+        if finished:
+            break
+
+    return result
