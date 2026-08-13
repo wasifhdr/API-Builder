@@ -19,6 +19,8 @@ REASON_SUBSCRIPTION = "subscription"
 REASON_API_ACCESS = "api_access"
 REASON_CALL_DEBIT = "call_debit"
 REASON_CALL_REFUND = "call_refund"
+REASON_AGENT_DEBIT = "agent_debit"
+REASON_AGENT_REFUND = "agent_refund"
 REASON_CALL_EARNING = "call_earning"
 REASON_PLATFORM_CUT = "platform_cut"
 REASON_SWEEP_OUT = "sweep_out"
@@ -62,6 +64,11 @@ class WalletLedger(Base):
         ForeignKey("users.id", ondelete="SET NULL"))
     cashout_request_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("cashout_requests.id", ondelete="SET NULL"))
+    # Links a debit/refund pair to the agent run that caused it — unlike the
+    # other FK columns above, there's no cycle risk here (AgentRun doesn't
+    # reference WalletLedger), so this gets a normal FK.
+    agent_run_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("agent_runs.id", ondelete="SET NULL"), index=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), index=True)
 

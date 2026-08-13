@@ -60,6 +60,7 @@ def _ledger_row(
     transaction_id: uuid.UUID | None,
     counterparty_user_id: uuid.UUID | None,
     cashout_request_id: uuid.UUID | None = None,
+    agent_run_id: uuid.UUID | None = None,
 ) -> WalletLedger:
     return WalletLedger(
         user_id=user_id,
@@ -72,6 +73,7 @@ def _ledger_row(
         transaction_id=transaction_id,
         counterparty_user_id=counterparty_user_id,
         cashout_request_id=cashout_request_id,
+        agent_run_id=agent_run_id,
     )
 
 
@@ -87,6 +89,7 @@ async def debit(
     transaction_id: uuid.UUID | None = None,
     counterparty_user_id: uuid.UUID | None = None,
     cashout_request_id: uuid.UUID | None = None,
+    agent_run_id: uuid.UUID | None = None,
 ) -> Decimal:
     """Atomically debits `amount` from user_id's `bucket` via a conditional
     UPDATE — never a read-then-write — so concurrent debits can never drive
@@ -113,7 +116,7 @@ async def debit(
         user_id, bucket, -amount, reason, new_value,
         execution_id=execution_id, api_id=api_id,
         transaction_id=transaction_id, counterparty_user_id=counterparty_user_id,
-        cashout_request_id=cashout_request_id,
+        cashout_request_id=cashout_request_id, agent_run_id=agent_run_id,
     ))
     return new_value
 
@@ -130,6 +133,7 @@ async def credit(
     transaction_id: uuid.UUID | None = None,
     counterparty_user_id: uuid.UUID | None = None,
     cashout_request_id: uuid.UUID | None = None,
+    agent_run_id: uuid.UUID | None = None,
 ) -> Decimal:
     """Atomically credits `amount` to user_id's `bucket`, creating the wallet
     row on first use (INSERT .. ON CONFLICT DO UPDATE — safe under concurrent
@@ -150,7 +154,7 @@ async def credit(
         user_id, bucket, amount, reason, new_value,
         execution_id=execution_id, api_id=api_id,
         transaction_id=transaction_id, counterparty_user_id=counterparty_user_id,
-        cashout_request_id=cashout_request_id,
+        cashout_request_id=cashout_request_id, agent_run_id=agent_run_id,
     ))
     return new_value
 
