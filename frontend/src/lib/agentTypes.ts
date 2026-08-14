@@ -7,6 +7,7 @@ export type AgentRunStatus =
   | 'repairing'
   | 'succeeded'
   | 'failed'
+  | 'cancelled'
 
 export interface AgentPlanParameter {
   name: string
@@ -25,6 +26,7 @@ export interface AgentPlanField {
 export interface AgentPlan {
   url?: string
   summary?: string
+  result_shape?: 'list' | 'detail'
   parameters?: AgentPlanParameter[]
   fields?: AgentPlanField[]
 }

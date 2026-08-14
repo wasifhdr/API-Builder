@@ -10,7 +10,7 @@ interface AgentRunState {
 }
 
 const RECONNECT_DELAY_MS = 2000
-const TERMINAL_STATES = new Set(['succeeded', 'failed'])
+const TERMINAL_STATES = new Set(['succeeded', 'failed', 'cancelled'])
 
 /** Connects to an agent run's progress channel and keeps AgentRunOut fresh.
  *
@@ -80,9 +80,9 @@ export function useAgentRun(runId: string | null) {
   }, [runId, connect, refresh])
 
   const confirmUrl = useCallback(
-    async (ok: boolean) => {
+    async (ok: boolean, url?: string) => {
       if (!runId) return
-      await api.post(`/agent/runs/${runId}/confirm`, { ok })
+      await api.post(`/agent/runs/${runId}/confirm`, { ok, url })
     },
     [runId],
   )

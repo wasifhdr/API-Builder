@@ -8,7 +8,9 @@ import {
   buttonClasses,
   CapsLabel,
   cardClasses,
+  FieldError,
   FieldLabel,
+  Input,
   Spinner,
   Textarea,
 } from '../components/ui'
@@ -25,6 +27,7 @@ const STATUS_LABEL: Record<AgentRunStatus, string> = {
   repairing: 'Retrying with a new strategy',
   succeeded: 'Succeeded',
   failed: 'Failed',
+  cancelled: 'Cancelled',
 }
 
 const STATUS_BADGE: Record<AgentRunStatus, BadgeVariant> = {
@@ -36,6 +39,7 @@ const STATUS_BADGE: Record<AgentRunStatus, BadgeVariant> = {
   repairing: 'pending',
   succeeded: 'success',
   failed: 'failed',
+  cancelled: 'pending',
 }
 
 /** Entry screen: describe the API in a sentence. Separate from the recorder
@@ -110,6 +114,8 @@ function PromptForm() {
 function RunProgress({ runId }: { runId: string }) {
   const { run, activity, checks, connectionError, confirmUrl } = useAgentRun(runId)
   const [confirming, setConfirming] = useState(false)
+  const [urlDraft, setUrlDraft] = useState<string | null>(null)
+  const [urlError, setUrlError] = useState<string | null>(null)
 
   if (!run) {
     return (
@@ -121,8 +127,11 @@ function RunProgress({ runId }: { runId: string }) {
 
   async function handleConfirm(ok: boolean) {
     setConfirming(true)
+    setUrlError(null)
     try {
-      await confirmUrl(ok)
+      await confirmUrl(ok, ok ? (urlDraft ?? run?.resolved_url ?? undefined) : undefined)
+    } catch (err) {
+      setUrlError(err instanceof Error ? err.message : 'Could not confirm that address')
     } finally {
       setConfirming(false)
     }
@@ -148,13 +157,29 @@ function RunProgress({ runId }: { runId: string }) {
           <CapsLabel tone="blue" className="mb-2">
             Confirm the target site
           </CapsLabel>
-          <p className="mb-4 break-all text-ink">{run.resolved_url}</p>
-          <div className="flex gap-3">
+          <p className="mb-3 text-sm text-ink/70">
+            The agent picked this from the description. Edit it if it&apos;s wrong.
+          </p>
+          <Input
+            aria-label="Target site URL"
+            value={urlDraft ?? run.resolved_url}
+            error={!!urlError}
+            disabled={confirming}
+            onChange={(e) => setUrlDraft(e.target.value)}
+            className="mb-1"
+          />
+          {urlError && <FieldError>{urlError}</FieldError>}
+          {run.plan.result_shape && (
+            <p className="mb-4 mt-2 text-sm text-ink/60">
+              Returns {run.plan.result_shape === 'list' ? 'a list of results' : 'one record'}.
+            </p>
+          )}
+          <div className="mt-4 flex gap-3">
             <Button variant="primary" disabled={confirming} onClick={() => handleConfirm(true)}>
               Confirm
             </Button>
             <Button variant="ghost" disabled={confirming} onClick={() => handleConfirm(false)}>
-              Cancel
+              Cancel run
             </Button>
           </div>
         </div>
@@ -211,6 +236,20 @@ function RunProgress({ runId }: { runId: string }) {
           <p className="mb-4 text-ink/80">The API is ready to publish.</p>
           <Link to={`/workflows/${run.workflow_id}/edit`} className={buttonClasses('primary')}>
             Review and publish
+          </Link>
+        </div>
+      )}
+
+      {run.status === 'cancelled' && (
+        <div className={cardClasses({ variant: 'callout', accent: 'gold' })}>
+          <CapsLabel tone="gold" className="mb-2">
+            Cancelled
+          </CapsLabel>
+          <p className="mb-4 text-ink/80">
+            You stopped this run before it started. You haven&apos;t been charged.
+          </p>
+          <Link to="/build" className={buttonClasses('primary')}>
+            Start over
           </Link>
         </div>
       )}
