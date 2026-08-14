@@ -2,7 +2,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from app.agent.driver import drive
+from app.agent.driver import _task_brief, drive
 from app.llm.client import ToolCall, TurnResult
 
 
@@ -136,3 +136,46 @@ async def test_drive_calls_on_progress_for_each_tool_call(fixture_site_url, fixt
         await drive(fixture_page, plan, on_progress=_on_progress)
 
     assert seen == ["done"]
+
+
+def _brief_plan(**overrides):
+    plan = {
+        "url": "https://example.com",
+        "summary": "Search products",
+        "result_shape": "list",
+        "parameters": [{"name": "query", "type": "string", "drive_value": "refrigerator"}],
+        "fields": [{"name": "title"}, {"name": "price"}],
+    }
+    plan.update(overrides)
+    return plan
+
+
+def test_task_brief_forbids_opening_a_result_for_a_list_shape():
+    brief = _task_brief(_brief_plan())
+    assert "Do NOT open an individual result" in brief
+
+
+def test_task_brief_permits_reaching_one_record_for_a_detail_shape():
+    brief = _task_brief(_brief_plan(result_shape="detail"))
+    assert "Do NOT open an individual result" not in brief
+    assert "single record" in brief
+
+
+def test_task_brief_defaults_to_the_list_rule_when_the_shape_is_absent():
+    plan = _brief_plan()
+    del plan["result_shape"]
+    assert "Do NOT open an individual result" in _task_brief(plan)
+
+
+def test_a_repair_hint_is_labelled_and_not_folded_into_the_task():
+    """The hint used to be appended to plan['summary'], so the model read a
+    failure transcript where it expected a goal statement."""
+    brief = _task_brief(_brief_plan(), hint="Previous attempt failed: nulls")
+    task_line = brief.splitlines()[0]
+    assert "Previous attempt failed" not in task_line
+    assert "PREVIOUS ATTEMPT" in brief
+    assert "Previous attempt failed: nulls" in brief
+
+
+def test_no_hint_section_when_there_is_no_hint():
+    assert "PREVIOUS ATTEMPT" not in _task_brief(_brief_plan())

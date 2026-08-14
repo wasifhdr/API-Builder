@@ -20,6 +20,10 @@ DRIVE_SYSTEM = (
     "click the button). Do NOT navigate straight to a result URL you guessed — "
     "that produces an API that returns the same data for every input, which "
     "fails verification.\n"
+    "- Extract at the altitude the task states. For a list task the answer is "
+    "the repeating rows on the page your interaction produced; clicking into "
+    "one of them produces an API that returns that one record for every "
+    "input.\n"
     "- Use the exact example value given for each parameter, so the value can "
     "be recognised and turned into a parameter afterwards.\n"
     "- Marking data to extract is a TWO-STEP sequence, always in this order: "
@@ -50,22 +54,45 @@ class DriveResult:
     blocked: bool = False
 
 
-def _task_brief(plan: dict) -> str:
+_SHAPE_RULES = {
+    "list": (
+        "The data lives on the page your interaction produces. Mark a "
+        "representative result row THERE. Do NOT open an individual result — "
+        "an API built from one record's page returns that one record forever."
+    ),
+    "detail": (
+        "Reach the single record the request describes, then mark its fields."
+    ),
+}
+
+
+def _task_brief(plan: dict, hint: str = "") -> str:
     params = "\n".join(
         f"- {p['name']} ({p['type']}): use the value {p['drive_value']!r}"
         for p in plan["parameters"]
     )
     fields = ", ".join(f["name"] for f in plan["fields"])
-    return (
-        f"Task: {plan.get('summary') or 'build the described API'}\n"
+    shape = plan.get("result_shape")
+    if shape not in _SHAPE_RULES:
+        shape = "list"
+    sections = [
+        f"Task: {plan.get('summary') or 'build the described API'}",
         f"You are already at the start URL ({plan['url']}) — the observation "
-        "below shows the current page. Do not navigate there again.\n"
-        f"Parameters to exercise:\n{params or '- (none)'}\n"
-        f"Data fields the API must return: {fields}"
-    )
+        "below shows the current page. Do not navigate there again.",
+        _SHAPE_RULES[shape],
+        f"Parameters to exercise:\n{params or '- (none)'}",
+        f"Data fields the API must return: {fields}",
+    ]
+    if hint:
+        # Its own labelled section: appending this to the task statement made
+        # the model read a failure transcript as its goal.
+        sections.append(f"PREVIOUS ATTEMPT (do not repeat this route):\n{hint}")
+    return "\n".join(sections)
 
 
-async def drive(page: Page, plan: dict, max_turns: int = 25, on_progress=None) -> DriveResult:
+async def drive(
+    page: Page, plan: dict, max_turns: int = 25, on_progress=None, hint: str = "",
+) -> DriveResult:
     """Runs the agent's tool-calling loop against a live page.
 
     The page belongs to a live RecordingSession, so every action taken here is
@@ -90,7 +117,9 @@ async def drive(page: Page, plan: dict, max_turns: int = 25, on_progress=None) -
 
     observation = await observe(page)
     messages: list[dict] = [
-        user_message(f"{_task_brief(plan)}\n\n{observation.tree}", observation.screenshot_b64)
+        user_message(
+            f"{_task_brief(plan, hint)}\n\n{observation.tree}", observation.screenshot_b64
+        )
     ]
 
     for _ in range(max_turns):

@@ -238,13 +238,12 @@ async def run_agent(agent_run_id: uuid.UUID) -> None:
         await _set_status(agent_run_id, status, attempt=attempt)
 
         outcome: dict = {"marks": [], "tokens": 0, "gave_up_reason": None, "blocked": False}
-        task_plan = plan if not hint else {**plan, "summary": f"{plan.get('summary', '')}\n\n{hint}".strip()}
 
         async def _on_progress(name, arguments, text, _run_id=agent_run_id) -> None:
             await publish(_run_id, {"t": "step", "tool": name, "detail": text})
 
-        async def agent_driver(session, _task_plan=task_plan, _outcome=outcome) -> None:
-            result = await drive(session.page, _task_plan, on_progress=_on_progress)
+        async def agent_driver(session, _hint=hint, _outcome=outcome) -> None:
+            result = await drive(session.page, plan, on_progress=_on_progress, hint=_hint)
             _outcome["marks"] = result.marks
             _outcome["tokens"] = result.tokens
             if result.gave_up:
