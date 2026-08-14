@@ -48,3 +48,26 @@ def test_build_repair_context_summarizes_the_previous_attempt():
     assert "differs_from_drive" in context
     assert "refrigerator" in context
     assert "goto" in context and "fill" in context
+
+
+from app.agent.runner import sample_failure_reason
+
+SAMPLE_FIELDS = [{"name": "title"}, {"name": "price"}]
+
+
+def test_sample_failure_reason_is_none_when_every_field_has_a_value():
+    sample = [{"title": "Blue Refrigerator", "price": "45000"}]
+    assert sample_failure_reason(sample, SAMPLE_FIELDS) is None
+
+
+def test_sample_failure_reason_names_the_empty_fields():
+    sample = [{"title": "Blue Refrigerator", "price": None}]
+    assert sample_failure_reason(sample, SAMPLE_FIELDS) == (
+        "the marked elements produced no value for: price"
+    )
+
+
+def test_sample_failure_reason_rejects_a_sample_that_never_ran():
+    assert sample_failure_reason(None, SAMPLE_FIELDS) == (
+        "the marked elements produced no value for: title, price"
+    )

@@ -7,7 +7,7 @@ from app.agent.distill import DistillError, append_extract_step, bind_parameters
 from app.agent.driver import drive
 from app.agent.extract import ExtractionError, build_extraction
 from app.agent.planner import build_plan
-from app.agent.verify import VerifyResult, verify_workflow
+from app.agent.verify import VerifyResult, missing_field_names, verify_workflow
 from app.db import async_session
 from app.models.agent_run import AgentRun, AgentRunStatus
 from app.models.user import User
@@ -59,6 +59,20 @@ def repair_hint(result: VerifyResult) -> str:
         if hint:
             parts.append(hint)
     return "\n".join(parts)
+
+
+def sample_failure_reason(sample: object, fields: list[dict] | None) -> str | None:
+    """Rejects an attempt whose marked elements produced nothing, before a
+    verify replay is spent on it.
+
+    Applies exactly the rule verify applies to the replayed output: a sample of
+    pure nulls is a broken extraction, not an empty result set. Catching it here
+    saves a full headless replay on an attempt that cannot pass.
+    """
+    missing = missing_field_names(sample, fields)
+    if not missing:
+        return None
+    return "the marked elements produced no value for: " + ", ".join(missing)
 
 
 def evt_channel(run_id: uuid.UUID) -> str:
@@ -257,6 +271,19 @@ async def run_agent(agent_run_id: uuid.UUID) -> None:
             # redact_steps, since this is the one path where recorded
             # credentials would otherwise reach the model.
             hint = build_repair_context(session.steps, reason)
+            continue
+
+        bad_sample = sample_failure_reason(session.final_sample, plan.get("fields"))
+        if bad_sample:
+            log.info("agent %s attempt %s bad sample: %s", agent_run_id, attempt, bad_sample)
+            if attempt >= MAX_ATTEMPTS:
+                await _finish(
+                    agent_run_id, succeeded=False, reason=bad_sample, tokens=total_tokens,
+                )
+                return
+            hint = build_repair_context(
+                session.steps, f"{bad_sample}\n{_STRATEGY_HINTS['fields_present']}"
+            )
             continue
 
         try:
