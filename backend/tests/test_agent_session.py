@@ -8,12 +8,21 @@ from app.recorder.session import RecordingSession
 
 
 @pytest_asyncio.fixture(autouse=True)
-async def _session_uses_test_db(engine, monkeypatch):
+async def _session_uses_test_db(engine, redis, monkeypatch):
     # RecordingSession opens its own DB session via the module-level
     # `async_session` imported from app.db, bound at import time to the dev
     # DB rather than the apibuilder_test DB the db/engine fixtures use — same
     # mismatch test_recorder_rerecord.py documents and works around.
     monkeypatch.setattr(recorder_session, "async_session", async_sessionmaker(engine, expire_on_commit=False))
+    # RecordingSession.__init__ also reads the module-level `redis_client`
+    # (dev Redis DB 0) into self.redis at construction time. Left unpatched,
+    # this test passes in isolation but fails when run alongside the rest of
+    # the suite: the dev client's connection pool is tied to whichever event
+    # loop last used it, and pytest-asyncio hands every test a fresh loop, so
+    # by the time enough other tests have touched app.redis.redis_client the
+    # connection belongs to an already-closed loop. Must be set BEFORE
+    # RecordingSession(...) is constructed — self.redis is captured at init.
+    monkeypatch.setattr(recorder_session, "redis_client", redis)
 
 
 def test_session_defaults_to_headful_and_no_driver():

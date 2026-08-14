@@ -21,7 +21,6 @@ from app.llm.client import ToolCall, TurnResult
 from app.models.agent_run import AgentRunStatus
 from app.models.billing import PlanTier, Subscription, SubscriptionStatus
 from app.models.workflow import Workflow, WorkflowStatus
-from app.redis import redis_client
 from app.services import agent_runs, plans, wallet
 from app.services.plans import invalidate_cache
 
@@ -36,13 +35,23 @@ def _reset_plan_cache():
 
 
 @pytest_asyncio.fixture(autouse=True)
-async def _agent_uses_test_db(engine, monkeypatch):
+async def _agent_uses_test_db(engine, redis, monkeypatch):
     # Both RecordingSession and app.agent.runner open their own DB sessions via
     # the module-level `async_session` bound to the dev DB at import time —
     # same mismatch test_recorder_rerecord.py documents and works around.
     test_sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
     monkeypatch.setattr(recorder_session, "async_session", test_sessionmaker)
     monkeypatch.setattr(runner_module, "async_session", test_sessionmaker)
+    # Same class of mismatch for Redis: RecordingSession.__init__ and every
+    # app.agent.runner function capture the module-level `redis_client` (dev
+    # Redis DB 0) at call/construction time. Both sides of the confirm-url
+    # handshake below happened to use that same dev-bound singleton
+    # consistently, so this passed by accident rather than by being isolated
+    # — and failed once observed deep in a large combined run, when an
+    # earlier test's now-closed event loop left the shared connection dead.
+    # Redirect to the test fixture's isolated client instead.
+    monkeypatch.setattr(recorder_session, "redis_client", redis)
+    monkeypatch.setattr(runner_module, "redis_client", redis)
 
 
 def _find_ref(text: str, label: str) -> str:
@@ -160,10 +169,12 @@ async def test_run_agent_reaches_succeeded_against_the_fixture_site(
         # two DB writes, and a status publish, so a single fixed-delay publish
         # races that and can miss the window entirely. Publish repeatedly
         # instead — cheap, and only one delivery needs to land inside an
-        # active subscription for run_agent to proceed.
+        # active subscription for run_agent to proceed. Uses the `redis`
+        # fixture directly — run_agent's own redis_client is monkeypatched to
+        # the same instance, so this reaches the same channel it listens on.
         message = json.dumps({"t": "confirm_url", "ok": True})
         for _ in range(30):
-            await redis_client.publish(cmd_channel(run.id), message)
+            await redis.publish(cmd_channel(run.id), message)
             await asyncio.sleep(0.3)
 
     with patch("app.agent.runner.build_plan", AsyncMock(return_value=plan)), \
