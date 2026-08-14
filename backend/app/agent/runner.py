@@ -243,22 +243,28 @@ async def run_agent(agent_run_id: uuid.UUID) -> None:
         total_tokens += outcome["tokens"]
 
         if outcome["gave_up_reason"]:
-            hint = outcome["gave_up_reason"]
-            log.info("agent %s attempt %s gave up: %s", agent_run_id, attempt, hint)
+            reason = outcome["gave_up_reason"]
+            log.info("agent %s attempt %s gave up: %s", agent_run_id, attempt, reason)
             if attempt >= MAX_ATTEMPTS:
-                await _finish(agent_run_id, succeeded=False, reason=hint, tokens=total_tokens)
+                await _finish(agent_run_id, succeeded=False, reason=reason, tokens=total_tokens)
                 return
+            # Feeds the next attempt a redacted transcript, not just the
+            # reason — build_repair_context always routes through
+            # redact_steps, since this is the one path where recorded
+            # credentials would otherwise reach the model.
+            hint = build_repair_context(session.steps, reason)
             continue
 
         try:
             bound_steps = bind_parameters(session.steps, plan)
             bound_steps = append_extract_step(bound_steps, session.extraction)
         except DistillError as exc:
-            hint = str(exc)
-            log.info("agent %s attempt %s distill failed: %s", agent_run_id, attempt, hint)
+            reason = str(exc)
+            log.info("agent %s attempt %s distill failed: %s", agent_run_id, attempt, reason)
             if attempt >= MAX_ATTEMPTS:
-                await _finish(agent_run_id, succeeded=False, reason=hint, tokens=total_tokens)
+                await _finish(agent_run_id, succeeded=False, reason=reason, tokens=total_tokens)
                 return
+            hint = build_repair_context(session.steps, reason)
             continue
 
         snapshot = {"steps": bound_steps, "extraction": session.extraction}
@@ -295,8 +301,12 @@ async def run_agent(agent_run_id: uuid.UUID) -> None:
             await publish(agent_run_id, {"t": "workflow_ready", "workflow_id": str(workflow.id)})
             return
 
-        hint = repair_hint(verify_result)
-        log.info("agent %s attempt %s failed verify: %s", agent_run_id, attempt, hint)
+        verify_hint = repair_hint(verify_result)
+        log.info("agent %s attempt %s failed verify: %s", agent_run_id, attempt, verify_hint)
+        # Redacted transcript + which checks failed, not just the failure
+        # text: see the gave_up_reason branch above for why this always
+        # routes through build_repair_context.
+        hint = build_repair_context(bound_steps, verify_hint)
         if not should_retry(verify_result, attempt):
             break
 
