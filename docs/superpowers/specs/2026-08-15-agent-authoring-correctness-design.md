@@ -94,6 +94,24 @@ by any static rule available to us; it is *steered* by the prompt and made **lou
 rather than prevented. This asymmetry is deliberate and is stated as a limitation in §8, not
 papered over.
 
+> **Corrected after the whole-branch review (2026-08-15).** The sentence above originally claimed
+> both invariants "make no assumption about the shape of the workflow". That was wrong for
+> Invariant A, and the error survived because it was reasoned about in the abstract and never
+> checked against the `detail`-shape drive brief this same design ships (§4).
+>
+> For a `detail` task the drive brief tells the agent to reach one specific record, which on most
+> sites means clicking a search result — through exactly the content-anchored selector Invariant A
+> rejects. When that selector misses at verify time and replay falls through to the structural
+> candidate, it lands on the *correct* record, because there is only one. Invariant A's
+> true-positive rate is therefore shape-dependent: outside `list` shape its findings are false
+> positives, and its repair hint ("do not click an individual result") is unsatisfiable for a
+> lookup whose fields live only on that record's page — so the agent would burn all three attempts
+> and ship nothing.
+>
+> Invariant A is consequently **scoped to `result_shape: "list"`**, which is where the failure it
+> exists to catch actually lives. A missing or unrecognised shape defaults to `list`, so an
+> unshaped plan still gets the protection. Invariant B remains genuinely shape-neutral.
+
 ---
 
 ## 3. Section 1 — the plan declares output cardinality
@@ -161,7 +179,11 @@ one containing `:has-text(` or `[href=`.
 > **Revised during planning (2026-08-15).** An earlier draft exempted candidates whose literal was
 > one of the plan's parameter values. That exemption was wrong: replay never templates a *selector*,
 > only step values and goto URLs, so a selector anchored to the drive value is exactly the bug class
-> this check exists to catch. No exemption.
+> this check exists to catch. No *per-candidate* exemption.
+
+**The check runs only for `result_shape: "list"`** — see the correction in §2. This is a scoping
+decision, not a per-candidate exemption: within a list-shaped plan every content-anchored fallback
+is still reported with no exceptions. A missing or unrecognised shape defaults to `list`.
 
 The narrowing to content-anchored candidates is a false-positive filter, not the detector: a
 timing flake on an id- or class-based candidate is common and harmless, and must not fail a run.
@@ -247,6 +269,13 @@ The existing 300-second confirmation timeout is unchanged and resolves to cancel
    would fail a run that was fine. Judged rare, and the cost is one retry rather than a wrong API.
 4. **The planner still picks the start URL from model knowledge alone** — no search, no
    verification. §7 makes that correctable by hand; it does not make it accurate.
+5. **`detail`-shape workflows get no parameter-stability enforcement at all.** Invariant A is
+   scoped to `list` shape (§2), so a `detail` workflow that reaches the wrong record — rather than
+   the right one — through a content-anchored click will not be caught by `stable_selectors`. It
+   still has to survive `fields_present`, `has_rows`, and `differs_from_drive`, and the last of
+   those catches the specific case of a workflow that returns identical data regardless of input.
+   The gap is a `detail` workflow that returns *different but wrong* records per value. Accepted
+   deliberately: the alternative was rejecting every legitimate detail lookup.
 
 ---
 
