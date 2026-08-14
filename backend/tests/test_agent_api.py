@@ -8,7 +8,7 @@ import pytest
 from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
-from app.agent.runner import cmd_channel
+from app.agent.runner import UrlDecision, cmd_channel, valid_start_url
 from app.api import agent as agent_api
 from app.models.agent_run import AgentRun, AgentRunStatus
 from app.models.billing import PlanTier, Subscription, SubscriptionStatus
@@ -149,7 +149,7 @@ async def test_confirm_publishes_to_the_command_channel(db, make_user, redis):
         if message is not None:
             break
     assert message is not None, "confirm_url command never arrived"
-    assert json.loads(message["data"]) == {"t": "confirm_url", "ok": True}
+    assert json.loads(message["data"]) == {"t": "confirm_url", "ok": True, "url": None}
     await pubsub.aclose()
 
 
@@ -210,3 +210,71 @@ async def test_list_runs_returns_only_the_callers_runs_newest_first(db, make_use
 
     out = await agent_api.list_runs(user=owner, db=db)
     assert [r.prompt for r in out] == ["second", "first"]
+
+
+def test_valid_start_url_accepts_an_http_url():
+    assert valid_start_url("https://waltonbd.com/search") == "https://waltonbd.com/search"
+
+
+def test_valid_start_url_strips_surrounding_whitespace():
+    assert valid_start_url("  https://waltonbd.com  ") == "https://waltonbd.com"
+
+
+def test_valid_start_url_rejects_a_javascript_url():
+    assert valid_start_url("javascript:alert(1)") is None
+
+
+def test_valid_start_url_rejects_a_scheme_without_a_host():
+    assert valid_start_url("https://") is None
+
+
+def test_valid_start_url_rejects_an_overlong_url():
+    assert valid_start_url("https://x.com/" + "a" * 2100) is None
+
+
+def test_valid_start_url_passes_none_through():
+    assert valid_start_url(None) is None
+
+
+@pytest.mark.asyncio
+async def test_confirm_publishes_an_edited_url(db, make_user, redis):
+    user = await _funded_pro(db, make_user)
+    run = AgentRun(user_id=user.id, prompt="p", status=AgentRunStatus.AWAITING_CONFIRM)
+    db.add(run)
+    await db.commit()
+    await db.refresh(run)
+
+    pubsub = redis.pubsub()
+    await pubsub.subscribe(cmd_channel(run.id))
+
+    await agent_api.confirm_url(
+        run.id, ConfirmUrlIn(ok=True, url="https://waltonbd.com/search"), user, db,
+    )
+
+    for _ in range(20):
+        message = await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
+        if message and message["type"] == "message":
+            assert json.loads(message["data"]) == {
+                "t": "confirm_url", "ok": True, "url": "https://waltonbd.com/search",
+            }
+            break
+    else:
+        pytest.fail("no confirm_url command was published")
+
+    await pubsub.unsubscribe(cmd_channel(run.id))
+    await pubsub.aclose()
+
+
+@pytest.mark.asyncio
+async def test_confirm_rejects_a_javascript_url_with_400(db, make_user):
+    user = await _funded_pro(db, make_user)
+    run = AgentRun(user_id=user.id, prompt="p", status=AgentRunStatus.AWAITING_CONFIRM)
+    db.add(run)
+    await db.commit()
+    await db.refresh(run)
+
+    with pytest.raises(HTTPException) as exc:
+        await agent_api.confirm_url(
+            run.id, ConfirmUrlIn(ok=True, url="javascript:alert(1)"), user, db,
+        )
+    assert exc.value.status_code == 400

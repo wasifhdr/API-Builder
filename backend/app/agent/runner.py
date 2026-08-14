@@ -2,6 +2,8 @@ import json
 import logging
 import time
 import uuid
+from dataclasses import dataclass
+from urllib.parse import urlparse
 
 from app.agent.distill import DistillError, append_extract_step, bind_parameters
 from app.agent.driver import drive
@@ -20,6 +22,35 @@ log = logging.getLogger("agent")
 
 MAX_ATTEMPTS = 3
 WALL_CLOCK_SECONDS = 600
+MAX_START_URL_CHARS = 2048
+
+
+@dataclass(frozen=True)
+class UrlDecision:
+    confirmed: bool
+    url: str | None = None
+
+
+def valid_start_url(url: str | None) -> str | None:
+    """Normalizes a user-supplied start URL, or None if it is unusable.
+
+    Applied on both sides of the command channel: the route uses it to answer
+    400 so the card can show the error inline, and the runner re-applies it
+    because Redis is not a trusted input.
+    """
+    if not url:
+        return None
+    candidate = url.strip()
+    if len(candidate) > MAX_START_URL_CHARS:
+        return None
+    try:
+        parsed = urlparse(candidate)
+    except ValueError:
+        return None
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        return None
+    return candidate
+
 
 _STRATEGY_HINTS = {
     "differs_from_drive": (
@@ -105,11 +136,12 @@ async def _set_status(run_id: uuid.UUID, status: AgentRunStatus, **extra) -> Non
     await publish(run_id, {"t": "status", "state": status.value, **extra})
 
 
-async def await_url_confirmation(run_id: uuid.UUID, timeout_s: float = 300.0) -> bool:
+async def await_url_confirmation(run_id: uuid.UUID, timeout_s: float = 300.0) -> UrlDecision:
     """Blocks until the user confirms or rejects the resolved URL.
 
     Uses the same command-channel pattern the recorder already uses for
-    pick-mode and undo — no new transport.
+    pick-mode and undo — no new transport. A timeout is a cancellation, not a
+    failure: the user walked away from a gate, they did not get a broken API.
     """
     pubsub = redis_client.pubsub()
     await pubsub.subscribe(cmd_channel(run_id))
@@ -121,8 +153,10 @@ async def await_url_confirmation(run_id: uuid.UUID, timeout_s: float = 300.0) ->
                 continue
             command = json.loads(message["data"])
             if command.get("t") == "confirm_url":
-                return bool(command.get("ok"))
-        return False
+                if not command.get("ok"):
+                    return UrlDecision(confirmed=False)
+                return UrlDecision(confirmed=True, url=valid_start_url(command.get("url")))
+        return UrlDecision(confirmed=False)
     finally:
         await pubsub.unsubscribe(cmd_channel(run_id))
         await pubsub.aclose()
@@ -155,6 +189,16 @@ async def _finish(run_id: uuid.UUID, *, succeeded: bool, reason: str | None, tok
     await publish(run_id, {
         "t": "status", "state": "succeeded" if succeeded else "failed", "reason": reason,
     })
+
+
+async def _cancel(run_id: uuid.UUID) -> None:
+    async with async_session() as db:
+        run = await db.get(AgentRun, run_id)
+        if run is None:
+            return
+        await agent_runs.cancel_run(run, db)
+        await db.commit()
+    await publish(run_id, {"t": "status", "state": "cancelled", "reason": None})
 
 
 async def run_agent(agent_run_id: uuid.UUID) -> None:
@@ -197,12 +241,19 @@ async def run_agent(agent_run_id: uuid.UUID) -> None:
 
     # --- Await user confirmation of the resolved URL ---
     await _set_status(agent_run_id, AgentRunStatus.AWAITING_CONFIRM, resolved_url=plan["url"])
-    if not await await_url_confirmation(agent_run_id):
-        await _finish(
-            agent_run_id, succeeded=False,
-            reason="user did not confirm the resolved URL", tokens=0,
-        )
+    decision = await await_url_confirmation(agent_run_id)
+    if not decision.confirmed:
+        await _cancel(agent_run_id)
         return
+    if decision.url:
+        # The user corrected the planner's guess. It becomes the plan's start
+        # URL and the workflow's, so every later step and every replay uses it.
+        plan["url"] = decision.url
+        async with async_session() as db:
+            run = await db.get(AgentRun, agent_run_id)
+            run.plan = {**plan}
+            run.resolved_url = decision.url
+            await db.commit()
 
     # --- Create the workflow the recording session will populate ---
     async with async_session() as db:

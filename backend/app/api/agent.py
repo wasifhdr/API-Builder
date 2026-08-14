@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.agent.runner import cmd_channel
+from app.agent.runner import cmd_channel, valid_start_url
 from app.core.deps import current_user
 from app.db import get_db
 from app.models.agent_run import AgentRun
@@ -80,4 +80,17 @@ async def confirm_url(
     exact channel — same command-channel pattern the recorder uses for
     pick-mode and undo, no new transport."""
     await _owned_run(run_id, user, db)
-    await redis_client.publish(cmd_channel(run_id), json.dumps({"t": "confirm_url", "ok": body.ok}))
+
+    url = None
+    if body.ok and body.url:
+        url = valid_start_url(body.url)
+        if url is None:
+            raise HTTPException(
+                status_code=400,
+                detail="Enter a full http:// or https:// address.",
+            )
+
+    await redis_client.publish(
+        cmd_channel(run_id),
+        json.dumps({"t": "confirm_url", "ok": body.ok, "url": url}),
+    )
