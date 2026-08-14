@@ -156,7 +156,12 @@ workflow with `verify_value` — a value the agent never drove with.
 
 **Verify change** ([`verify.py`](../../../backend/app/agent/verify.py)): a new check
 `stable_selectors`. It fails when a recorded fallback **skipped a content-anchored candidate** —
-`:has-text("…")` or `a[href="…"]` — whose literal is not one of the plan's parameter values.
+one containing `:has-text(` or `[href=`.
+
+> **Revised during planning (2026-08-15).** An earlier draft exempted candidates whose literal was
+> one of the plan's parameter values. That exemption was wrong: replay never templates a *selector*,
+> only step values and goto URLs, so a selector anchored to the drive value is exactly the bug class
+> this check exists to catch. No exemption.
 
 The narrowing to content-anchored candidates is a false-positive filter, not the detector: a
 timing flake on an id- or class-based candidate is common and harmless, and must not fail a run.
@@ -264,8 +269,8 @@ Unit, no browser required, against fixture step-lists and replay results:
 
 - `fields_present` fails on all-null rows; passes on sparse-but-real rows (the discount-price case).
 - The drive-time sample check fails an attempt before distilling.
-- `stable_selectors` fails on a skipped `:has-text` candidate; passes when the skipped candidate is
-  a class selector (flake filter); passes when the skipped literal *is* a parameter value.
+- `stable_selectors` fails on a skipped `:has-text` candidate and on a skipped `[href=]` candidate;
+  passes when the skipped candidate is a class selector (flake filter).
 - `build_plan` falls back to `list` on a missing or garbage `result_shape`.
 - The confirm route accepts an edited URL, rejects a `javascript:` URL with 400, and rejects a
   non-owner.
