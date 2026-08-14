@@ -5,17 +5,25 @@ from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select, text
 
+from app.agent.runner import WALL_CLOCK_SECONDS
 from app.config import settings
 from app.db import async_session
+from app.models.agent_run import TERMINAL_STATUSES, AgentRun
 from app.models.api import ApiAccessGrant
 from app.models.billing import PaymentStatus, PaymentTransaction, Subscription, SubscriptionStatus
 from app.models.execution import ApiExecution
+from app.services import agent_runs
 
 log = logging.getLogger("worker")
 
 SWEEP_INTERVAL_SECONDS = 600
 EXECUTION_RETENTION_PER_API = 200
 FAILURE_ARTIFACT_MAX_AGE_DAYS = 30
+# A run_agent process that dies mid-attempt (worker crash, OOM, power loss)
+# never reaches a terminal status and never refunds. 2x the run's own total
+# wall-clock budget gives a genuinely slow-but-alive run comfortable margin
+# before the sweep treats it as abandoned.
+AGENT_RUN_STALE_SECONDS = WALL_CLOCK_SECONDS * 2
 
 
 async def sweep_once() -> None:
@@ -60,12 +68,31 @@ async def sweep_once() -> None:
         for g in lapsed_grants:
             g.revoked_at = now
 
+        stale_cutoff = now - timedelta(seconds=AGENT_RUN_STALE_SECONDS)
+        result = await db.execute(
+            select(AgentRun).where(
+                AgentRun.status.notin_(TERMINAL_STATUSES),
+                AgentRun.updated_at <= stale_cutoff,
+            )
+        )
+        stale_runs = list(result.scalars())
+        for run in stale_runs:
+            # finish_run is idempotent and checks REASON_AGENT_REFUND before
+            # crediting, so a run the worker actually finishes between this
+            # query and this call can't be refunded twice.
+            await agent_runs.finish_run(
+                run, succeeded=False,
+                reason="the run did not report back in time (the worker likely crashed)",
+                db=db,
+            )
+
         await db.commit()
 
-        if expired_subs or expired_intents or lapsed_grants:
+        if expired_subs or expired_intents or lapsed_grants or stale_runs:
             log.info(
-                "sweep: expired %d subscriptions, %d payment intents, %d api grants",
-                len(expired_subs), len(expired_intents), len(lapsed_grants),
+                "sweep: expired %d subscriptions, %d payment intents, %d api grants, "
+                "reconciled %d stale agent runs",
+                len(expired_subs), len(expired_intents), len(lapsed_grants), len(stale_runs),
             )
 
         # Execution-log retention: keep only the most recent N rows per API,
