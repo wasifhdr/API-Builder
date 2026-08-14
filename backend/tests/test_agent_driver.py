@@ -69,6 +69,27 @@ async def test_drive_treats_a_textonly_turn_as_a_nudge(fixture_site_url, fixture
 
 
 @pytest.mark.asyncio
+async def test_drive_echoes_provider_extra_content_on_the_next_turn(fixture_site_url, fixture_page):
+    # Gemini rejects a multi-turn conversation once enough tool calls have
+    # gone by without their thought_signature echoed back — a short mocked
+    # conversation never hits that limit, so this checks the echo directly
+    # rather than relying on the API to eventually reject a missing one.
+    plan = {**PLAN, "url": f"{fixture_site_url}/search.html"}
+    extra = {"google": {"thought_signature": "sig-1"}}
+    turns = [
+        _turn(ToolCall("1", "scroll", {"direction": "down"}, raw_extra=extra)),
+        _turn(ToolCall("2", "done", {})),
+    ]
+    mock = AsyncMock(side_effect=turns)
+    with patch("app.agent.driver.complete_tools", mock):
+        await drive(fixture_page, plan, max_turns=5)
+
+    second_call_messages = mock.call_args_list[1].args[1]
+    assistant_message = next(m for m in second_call_messages if m.get("role") == "assistant" and m.get("tool_calls"))
+    assert assistant_message["tool_calls"][0]["extra_content"] == extra
+
+
+@pytest.mark.asyncio
 async def test_drive_calls_on_progress_for_each_tool_call(fixture_site_url, fixture_page):
     plan = {**PLAN, "url": f"{fixture_site_url}/search.html"}
     turns = [_turn(ToolCall("1", "done", {}))]

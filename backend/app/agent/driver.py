@@ -92,7 +92,14 @@ async def drive(page: Page, plan: dict, max_turns: int = 25, on_progress=None) -
             "content": turn.text,
             "tool_calls": [
                 {"id": c.id, "type": "function",
-                 "function": {"name": c.name, "arguments": json.dumps(c.arguments)}}
+                 "function": {"name": c.name, "arguments": json.dumps(c.arguments)},
+                 # Echoes back provider-specific data (e.g. Gemini's
+                 # thought_signature) attached to this call — omitting it is
+                 # accepted for a while and then rejected once enough turns
+                 # accumulate (openai.BadRequestError, "missing a
+                 # thought_signature"), so a short conversation never catches
+                 # a missing echo here.
+                 **({"extra_content": c.raw_extra} if c.raw_extra else {})}
                 for c in turn.tool_calls
             ],
         })

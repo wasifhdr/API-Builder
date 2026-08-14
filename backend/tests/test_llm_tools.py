@@ -20,11 +20,11 @@ def _fake_response(tool_calls=None, content=None, total_tokens=42):
     )
 
 
-def _fake_tool_call(call_id, name, arguments_json):
-    return SimpleNamespace(
-        id=call_id,
-        function=SimpleNamespace(name=name, arguments=arguments_json),
-    )
+def _fake_tool_call(call_id, name, arguments_json, extra_content=None):
+    kwargs = {"id": call_id, "function": SimpleNamespace(name=name, arguments=arguments_json)}
+    if extra_content is not None:
+        kwargs["extra_content"] = extra_content
+    return SimpleNamespace(**kwargs)
 
 
 @pytest.mark.asyncio
@@ -90,6 +90,28 @@ async def test_complete_tools_honors_the_model_override():
         await complete_tools("sys", [], [], model="some-stronger-model")
 
     assert create.call_args.kwargs["model"] == "some-stronger-model"
+
+
+@pytest.mark.asyncio
+async def test_complete_tools_captures_provider_extra_content():
+    # Gemini attaches extra_content.google.thought_signature to each tool
+    # call; omitting it when the call is echoed back on a later turn is
+    # accepted for a while and then rejected once enough turns accumulate.
+    extra = {"google": {"thought_signature": "abc123"}}
+    resp = _fake_response(tool_calls=[_fake_tool_call("c1", "click", '{"ref": "ref_1"}', extra_content=extra)])
+    with patch("app.llm.client.client.chat.completions.create", AsyncMock(return_value=resp)):
+        result = await complete_tools("sys", [user_message("go")], [])
+
+    assert result.tool_calls[0].raw_extra == extra
+
+
+@pytest.mark.asyncio
+async def test_complete_tools_defaults_raw_extra_to_none_when_absent():
+    resp = _fake_response(tool_calls=[_fake_tool_call("c1", "click", '{"ref": "ref_1"}')])
+    with patch("app.llm.client.client.chat.completions.create", AsyncMock(return_value=resp)):
+        result = await complete_tools("sys", [user_message("go")], [])
+
+    assert result.tool_calls[0].raw_extra is None
 
 
 @pytest.mark.asyncio

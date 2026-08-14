@@ -137,6 +137,14 @@ class ToolCall:
     id: str
     name: str
     arguments: dict
+    # Provider-specific data that must be echoed back verbatim on the tool
+    # call when it's replayed into a later turn's message history — e.g.
+    # Gemini's thought_signature (extra_content.google.thought_signature).
+    # Omitting it doesn't fail immediately; the API accepts a growing
+    # number of turns without it and then rejects the whole conversation
+    # once enough have accumulated, so this only shows up in genuinely
+    # long agent runs, never in a short scripted test.
+    raw_extra: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -213,7 +221,10 @@ async def complete_tools(
             # surface it as an empty-argument call so the loop can tell the
             # model it failed rather than crashing the session.
             arguments = {}
-        calls.append(ToolCall(id=raw.id, name=raw.function.name, arguments=arguments))
+        raw_extra = getattr(raw, "extra_content", None)
+        calls.append(ToolCall(
+            id=raw.id, name=raw.function.name, arguments=arguments, raw_extra=raw_extra,
+        ))
 
     usage = getattr(resp, "usage", None)
     return TurnResult(
