@@ -9,6 +9,13 @@ export type AgentRunStatus =
   | 'failed'
   | 'cancelled'
 
+/** Statuses that mark a run as finished — no further transitions will occur. */
+export const TERMINAL_RUN_STATUSES: ReadonlySet<AgentRunStatus> = new Set([
+  'succeeded',
+  'failed',
+  'cancelled',
+])
+
 export interface AgentPlanParameter {
   name: string
   type: string

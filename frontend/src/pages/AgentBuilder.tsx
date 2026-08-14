@@ -16,6 +16,7 @@ import {
 } from '../components/ui'
 import { useAgentRun } from '../hooks/useAgentRun'
 import { api, ApiError } from '../lib/api'
+import { TERMINAL_RUN_STATUSES } from '../lib/agentTypes'
 import type { AgentRunStatus } from '../lib/agentTypes'
 
 const STATUS_LABEL: Record<AgentRunStatus, string> = {
@@ -142,7 +143,7 @@ function RunProgress({ runId }: { runId: string }) {
       <div className={cardClasses({ variant: 'feature' })}>
         <div className="mb-3 flex items-center justify-between">
           <CapsLabel>Agent run</CapsLabel>
-          <Badge variant={STATUS_BADGE[run.status]} pulse={run.status !== 'succeeded' && run.status !== 'failed'}>
+          <Badge variant={STATUS_BADGE[run.status]} pulse={!TERMINAL_RUN_STATUSES.has(run.status)}>
             {STATUS_LABEL[run.status]}
           </Badge>
         </div>

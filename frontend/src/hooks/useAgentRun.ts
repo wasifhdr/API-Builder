@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from '../lib/api'
+import { TERMINAL_RUN_STATUSES } from '../lib/agentTypes'
 import type { AgentActivityEntry, AgentRun, AgentVerifyCheck } from '../lib/agentTypes'
 
 interface AgentRunState {
@@ -10,7 +11,6 @@ interface AgentRunState {
 }
 
 const RECONNECT_DELAY_MS = 2000
-const TERMINAL_STATES = new Set(['succeeded', 'failed', 'cancelled'])
 
 /** Connects to an agent run's progress channel and keeps AgentRunOut fresh.
  *
@@ -35,7 +35,7 @@ export function useAgentRun(runId: string | null) {
     try {
       const run = await api.get<AgentRun>(`/agent/runs/${runId}`)
       setState((s) => ({ ...s, run, connectionError: null }))
-      if (TERMINAL_STATES.has(run.status)) terminal.current = true
+      if (TERMINAL_RUN_STATUSES.has(run.status)) terminal.current = true
     } catch (err) {
       setState((s) => ({ ...s, connectionError: err instanceof Error ? err.message : 'Failed to load run' }))
     }
