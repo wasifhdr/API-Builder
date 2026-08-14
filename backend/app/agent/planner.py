@@ -5,6 +5,8 @@ from app.recorder.session import VALID_PARAM_TYPES
 
 _NAME_RE = re.compile(r"^[a-z][a-z0-9_]{0,29}$")
 
+VALID_RESULT_SHAPES = {"list", "detail"}
+
 PLAN_SCHEMA = {
     "type": "object",
     "properties": {
@@ -33,8 +35,9 @@ PLAN_SCHEMA = {
                 "required": ["name"],
             },
         },
+        "result_shape": {"type": "string", "enum": ["list", "detail"]},
     },
-    "required": ["url", "parameters", "fields"],
+    "required": ["url", "parameters", "fields", "result_shape"],
 }
 
 PLAN_SYSTEM = (
@@ -49,6 +52,10 @@ PLAN_SYSTEM = (
     "different results.\n"
     "- Parameter names are lowercase snake_case.\n"
     "- Field names describe the data, not the markup: title, price, url."
+    "\n- result_shape is 'list' when the request describes a search, a browse, "
+    "or a listing (search for products, list flights, top headlines), and "
+    "'detail' when it names one record's attributes (the specs of product X, "
+    "today's USD-BDT rate)."
 )
 
 
@@ -95,9 +102,17 @@ async def build_plan(prompt: str) -> dict:
             "description": item.get("description") or None,
         })
 
+    # Falls back rather than raising: a model that omits the cardinality has
+    # still produced a usable plan, and shipping the wrong shape is caught
+    # downstream by fields_present and stable_selectors.
+    shape = raw.get("result_shape")
+    if shape not in VALID_RESULT_SHAPES:
+        shape = "list"
+
     return {
         "url": url,
         "summary": raw.get("summary") or "",
         "parameters": parameters,
         "fields": fields,
+        "result_shape": shape,
     }
