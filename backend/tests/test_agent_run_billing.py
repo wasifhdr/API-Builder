@@ -134,3 +134,49 @@ async def test_super_admin_is_not_charged_and_bypasses_the_gate(db, make_user):
     )
     assert debits.scalars().all() == []
     assert run is not None
+
+
+@pytest.mark.asyncio
+async def test_cancel_run_refunds_and_marks_cancelled(db, make_user):
+    user = await _make_pro(db, make_user)
+    run = await agent_runs.create_run(user, "p", db)
+    await db.commit()
+
+    await agent_runs.cancel_run(run, db)
+    await db.commit()
+
+    balance, _ = await wallet.balances(user.id, db)
+    assert run.status == AgentRunStatus.CANCELLED
+    assert balance == Decimal("100.00")
+
+
+@pytest.mark.asyncio
+async def test_cancel_run_refunds_only_once(db, make_user):
+    user = await _make_pro(db, make_user)
+    run = await agent_runs.create_run(user, "p", db)
+    await db.commit()
+
+    await agent_runs.cancel_run(run, db)
+    await db.commit()
+    await agent_runs.cancel_run(run, db)
+    await db.commit()
+
+    balance, _ = await wallet.balances(user.id, db)
+    assert balance == Decimal("100.00")
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_run_cannot_later_be_marked_failed(db, make_user):
+    """Guards the race between a user cancelling and the runner's own timeout
+    path finishing the same run."""
+    user = await _make_pro(db, make_user)
+    run = await agent_runs.create_run(user, "p", db)
+    await db.commit()
+
+    await agent_runs.cancel_run(run, db)
+    await agent_runs.finish_run(run, succeeded=False, reason="timeout", db=db)
+    await db.commit()
+
+    balance, _ = await wallet.balances(user.id, db)
+    assert run.status == AgentRunStatus.CANCELLED
+    assert balance == Decimal("100.00")

@@ -17,9 +17,12 @@ class AgentRunStatus(str, enum.Enum):
     REPAIRING = "repairing"
     SUCCEEDED = "succeeded"
     FAILED = "failed"
+    CANCELLED = "cancelled"
 
 
-TERMINAL_STATUSES = {AgentRunStatus.SUCCEEDED, AgentRunStatus.FAILED}
+TERMINAL_STATUSES = {
+    AgentRunStatus.SUCCEEDED, AgentRunStatus.FAILED, AgentRunStatus.CANCELLED,
+}
 
 
 class AgentRun(Base, TimestampMixin):
