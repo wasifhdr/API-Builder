@@ -316,13 +316,21 @@ async def _first_visible(page: Page, selector: str, timeout_ms: int):
         await page.wait_for_timeout(SELECTOR_VISIBILITY_POLL_MS)
 
 
-async def _locate(page: Page, selectors: list[str]):
+async def _locate(page: Page, selectors: list[str]) -> tuple[Any, int]:
+    """Returns (locator, index) — index is the position in `selectors` of the
+    candidate that actually matched.
+
+    Falling through to a lower-ranked candidate is correct at production replay
+    time (it absorbs ordinary selector drift), but it is also how a step
+    anchored to drive-time content silently binds to the WRONG element. The
+    caller decides what to do with that fact; this function only reports it.
+    """
     last_exc: Exception | None = None
-    for selector, timeout_ms in zip(selectors, SELECTOR_ATTEMPT_TIMEOUTS_MS):
+    for index, (selector, timeout_ms) in enumerate(zip(selectors, SELECTOR_ATTEMPT_TIMEOUTS_MS)):
         try:
             locator = await _first_visible(page, selector, timeout_ms)
             if locator is not None:
-                return locator
+                return locator, index
         except Exception as exc:
             last_exc = exc
             continue
@@ -374,10 +382,14 @@ async def replay_workflow(
     headless: bool | None = None,
     workflow_id: uuid.UUID | None = None,
     user_id: uuid.UUID | None = None,
+    record_fallbacks: bool = False,
 ) -> dict[str, Any]:
     steps = workflow_snapshot.get("steps", [])
     extraction = workflow_snapshot.get("extraction", {})
     data: Any = None
+    # Populated only when the caller asks (verify does; production replay does
+    # not). Reporting only — the fallback behaviour above is unchanged.
+    fallbacks: list[dict] = []
 
     # Per-run override (owner's UI toggle) wins; otherwise fall back to the
     # process-level default from config/.env.
@@ -429,8 +441,19 @@ async def replay_workflow(
                 nav["pending"] = False
                 await page.wait_for_timeout(POST_NAV_WAIT_MS)
 
+        async def _locate_step(step: dict, index: int):
+            selectors = step.get("selectors", [])
+            locator, matched = await _locate(page, selectors)
+            if record_fallbacks and matched > 0:
+                fallbacks.append({
+                    "step_index": step.get("i", index),
+                    "skipped": selectors[:matched],
+                    "used": selectors[matched],
+                })
+            return locator
+
         try:
-            for step in steps:
+            for index, step in enumerate(steps):
                 stype = step.get("type")
 
                 # Dwell after any page load before beginning the next
@@ -452,16 +475,16 @@ async def replay_workflow(
                     if wall is not None:
                         raise ReplayError(wall.message())
                 elif stype == "click":
-                    locator = await _locate(page, step.get("selectors", []))
+                    locator = await _locate_step(step, index)
                     await locator.click()
                 elif stype == "fill":
-                    locator = await _locate(page, step.get("selectors", []))
+                    locator = await _locate_step(step, index)
                     await locator.fill(_resolve_value(step.get("value"), params))
                 elif stype == "press":
-                    locator = await _locate(page, step.get("selectors", []))
+                    locator = await _locate_step(step, index)
                     await locator.press(step["key"])
                 elif stype == "select_option":
-                    locator = await _locate(page, step.get("selectors", []))
+                    locator = await _locate_step(step, index)
                     await locator.select_option(value=_resolve_value(step.get("value"), params))
                 elif stype == "wait_for":
                     for selector in step.get("selectors", []):
@@ -506,4 +529,4 @@ async def replay_workflow(
             if browser is not None:
                 await browser.close()
 
-    return {"data": data}
+    return {"data": data, "selector_fallbacks": fallbacks}

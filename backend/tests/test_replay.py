@@ -491,3 +491,43 @@ async def test_compiled_engine_heals_broken_selector(monkeypatch):
     }
     result = await replay_workflow(snapshot, {}, None, uuid.uuid4())
     assert result["data"]["title"] == "Physics 101"
+
+
+@pytest.mark.asyncio
+async def test_replay_reports_a_selector_fallback(fixture_site_url):
+    """The Walton failure mode: a text-anchored candidate captured during the
+    drive misses under a different value, and a positional candidate silently
+    matches a DIFFERENT element."""
+    snapshot = {
+        "steps": [
+            {"i": 0, "type": "goto", "url": f"{fixture_site_url}/search.html?q=television"},
+            {"i": 1, "type": "click", "selectors": [
+                'a:has-text("Blue Refrigerator")',
+                "#results > li:nth-of-type(1)",
+            ]},
+        ],
+        "extraction": {},
+    }
+    result = await replay_workflow(
+        snapshot, {}, None, uuid.uuid4(), headless=True, record_fallbacks=True,
+    )
+    assert result["selector_fallbacks"] == [{
+        "step_index": 1,
+        "skipped": ['a:has-text("Blue Refrigerator")'],
+        "used": "#results > li:nth-of-type(1)",
+    }]
+
+
+@pytest.mark.asyncio
+async def test_replay_reports_nothing_when_the_first_candidate_matches(fixture_site_url):
+    snapshot = {
+        "steps": [
+            {"i": 0, "type": "goto", "url": f"{fixture_site_url}/search.html?q=television"},
+            {"i": 1, "type": "click", "selectors": ["#results > li:nth-of-type(1)"]},
+        ],
+        "extraction": {},
+    }
+    result = await replay_workflow(
+        snapshot, {}, None, uuid.uuid4(), headless=True, record_fallbacks=True,
+    )
+    assert result["selector_fallbacks"] == []
