@@ -1,6 +1,10 @@
+from unittest.mock import AsyncMock, patch
+
 import pytest
 
-from app.agent.verify import verify_workflow
+from app.agent.verify import missing_field_names, verify_workflow
+
+FIELDS = [{"name": "title"}, {"name": "price"}]
 
 PLAN = {
     "parameters": [{
@@ -100,3 +104,73 @@ async def test_replay_error_fails_the_first_check(fixture_site_url):
     assert not result.passed
     assert result.checks[0].name == "replays"
     assert not result.checks[0].passed
+
+
+def test_all_null_rows_count_as_missing_every_field():
+    """The Walton defect: every row dict carries every declared key, so key
+    presence is not evidence that anything was extracted."""
+    rows = [{"title": None, "price": None}, {"title": None, "price": None}]
+    assert missing_field_names(rows, FIELDS) == ["title", "price"]
+
+
+def test_a_key_present_but_null_is_not_a_present_field():
+    rows = [{"title": "Smart Television", "price": None}]
+    assert missing_field_names(rows, FIELDS) == ["price"]
+
+
+def test_a_field_populated_in_only_one_row_is_present():
+    """Sparse data is normal — a discount price on 1 of 3 rows is not a defect,
+    so no fill-rate threshold is applied."""
+    rows = [
+        {"title": "a", "price": None},
+        {"title": "b", "price": "99"},
+        {"title": "c", "price": None},
+    ]
+    assert missing_field_names(rows, FIELDS) == []
+
+
+def test_a_blank_string_is_missing():
+    assert missing_field_names([{"title": "   ", "price": "1"}], FIELDS) == ["title"]
+
+
+def test_a_single_dict_is_treated_as_one_row():
+    assert missing_field_names({"title": "x", "price": None}, FIELDS) == ["price"]
+
+
+def test_no_rows_means_every_field_missing():
+    assert missing_field_names([], FIELDS) == ["title", "price"]
+    assert missing_field_names(None, FIELDS) == ["title", "price"]
+
+
+@pytest.mark.asyncio
+async def test_all_null_rows_fail_verification(fixture_site_url):
+    """End to end: rows exist, keys exist, every value is null. Before this
+    change the run passed every check and published."""
+    snapshot = {
+        "steps": [
+            {"type": "goto",
+             "url": f"{fixture_site_url}/search.html?q=refrigerator",
+             "url_template": f"{fixture_site_url}/search.html?q={{query}}"},
+            {"type": "extract", "ref": "main"},
+        ],
+        "extraction": {"main": {
+            "mode": "list",
+            "root": "li.product",
+            "fields": [
+                {"name": "title", "selectors": [".no-such-title"], "take": "text"},
+                {"name": "price", "selectors": [".no-such-price"], "take": "text"},
+            ],
+        }},
+    }
+    # The extraction path calls the LLM to fill nulls; pin it to a no-op so the
+    # test asserts the CHECK, not the model's behaviour.
+    async def _no_fill(page, config, data):
+        return data
+
+    with patch("app.recorder.replay.llm_fill_missing", AsyncMock(side_effect=_no_fill)):
+        result = await verify_workflow(snapshot, PLAN, DRIVE_DATA)
+
+    assert not result.passed
+    check = next(c for c in result.checks if c.name == "fields_present")
+    assert not check.passed
+    assert "title" in check.detail and "price" in check.detail

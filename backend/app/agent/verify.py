@@ -40,6 +40,29 @@ def _canonical(data: object) -> str:
     return json.dumps(data, sort_keys=True, default=str)
 
 
+def _is_empty(value: object) -> bool:
+    return value is None or (isinstance(value, str) and not value.strip())
+
+
+def missing_field_names(data: object, fields: list[dict] | None) -> list[str]:
+    """Declared fields that carry no usable value anywhere in `data`.
+
+    Key presence is not evidence. Every row dict the extractor builds carries
+    every declared key, so `name in row` is satisfied by a row of pure nulls —
+    which is how a workflow returning nothing for every field reached READY and
+    got published. A blank string counts as missing for the same reason: an
+    empty text node is not extracted data.
+
+    A field populated in only ONE row is present. Sparse fields (a discount
+    price on 3 of 20 rows) are normal data, so no fill-rate threshold applies.
+    """
+    declared = [f["name"] for f in fields or []]
+    rows = _rows(data)
+    if not rows:
+        return declared
+    return [n for n in declared if all(_is_empty(row.get(n)) for row in rows)]
+
+
 async def verify_workflow(
     snapshot: dict,
     plan: dict,
@@ -81,8 +104,7 @@ async def verify_workflow(
         "extraction returned no rows" if not has_rows else f"{len(rows)} row(s)",
     ))
 
-    declared = [f["name"] for f in plan.get("fields") or []]
-    missing = [n for n in declared if not any(n in row for row in rows)] if rows else declared
+    missing = missing_field_names(data, plan.get("fields"))
     result.checks.append(CheckResult(
         "fields_present", not missing,
         f"declared fields missing from output: {', '.join(missing)}" if missing
