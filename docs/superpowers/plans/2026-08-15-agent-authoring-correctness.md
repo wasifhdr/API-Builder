@@ -1793,11 +1793,11 @@ cd backend && uv run ruff check app
 ```
 
 ```bash
-git add backend/
+git add <the exact files you changed>
 git commit -m "test(agent): full-suite regression after the correctness changes"
 ```
 
-Skip this commit if nothing changed.
+Skip this commit if nothing changed. Name the changed files explicitly — `git add backend/` would violate this plan's Global Constraints and sweep up unrelated work.
 
 ---
 
