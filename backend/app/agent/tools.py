@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from playwright.async_api import Page
 
 from app.agent.observe import Observation, RefNotFound, observe, resolve_ref
+from app.recorder import blocked
 
 log = logging.getLogger("agent")
 
@@ -62,6 +63,7 @@ class ToolOutcome:
     observation: Observation | None = None
     finished: bool = False
     gave_up: bool = False
+    blocked: bool = False
 
 
 async def dispatch(page: Page, name: str, arguments: dict, marks: list[str]) -> ToolOutcome:
@@ -79,7 +81,16 @@ async def dispatch(page: Page, name: str, arguments: dict, marks: list[str]) -> 
 
     try:
         if name == "navigate":
-            await page.goto(arguments["url"], wait_until="domcontentloaded")
+            response = await page.goto(arguments["url"], wait_until="domcontentloaded")
+            # Ends the run rather than reporting back to the model: no wording
+            # of the next tool call gets past a bot wall, so further turns would
+            # only spend tokens on a page that will never yield the data.
+            wall = await blocked.detect(page, response)
+            if wall is not None:
+                return ToolOutcome(
+                    text=f"gave up: {wall.message()}",
+                    finished=True, gave_up=True, blocked=True,
+                )
         elif name == "scroll":
             delta = 2000 if arguments.get("direction", "down") == "down" else -2000
             await page.mouse.wheel(0, delta)

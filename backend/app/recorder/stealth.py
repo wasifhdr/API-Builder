@@ -68,15 +68,42 @@ STEALTH_INIT_JS = r"""
     }
   } catch (e) {}
 
-  // 6. WebGL vendor/renderer — headless/SwiftShader leaks "Google SwiftShader".
-  //    Report a plausible desktop GPU string instead.
+  // 6. WebGL vendor/renderer — with --disable-gpu the headless renderer falls
+  //    back to SwiftShader ("ANGLE (Google, Vulkan ... SwiftShader driver)"),
+  //    which no desktop Chrome reports. Substitute what THIS machine reports
+  //    when driven headful; single-machine deployment, so that is simply the
+  //    truth about the browser a human would drive here.
+  //
+  //    Substituted ONLY when the software renderer is what leaked — headful
+  //    recording reports its real GPU untouched. Reporting a value that
+  //    contradicts the rest of the fingerprint is worse than reporting none:
+  //    these two strings previously named a macOS renderer ("Intel Iris
+  //    OpenGL Engine") while the UA said Windows, an impossible pairing that
+  //    is more detectable than the SwiftShader string it was hiding.
+  //
+  //    Update both strings if the deployment moves to another machine — read
+  //    them off a headful Chrome there (WEBGL_debug_renderer_info).
   try {
-    const getParam = WebGLRenderingContext.prototype.getParameter;
-    WebGLRenderingContext.prototype.getParameter = function (p) {
-      if (p === 37445) return 'Intel Inc.';               // UNMASKED_VENDOR_WEBGL
-      if (p === 37446) return 'Intel Iris OpenGL Engine';  // UNMASKED_RENDERER_WEBGL
-      return getParam.call(this, p);
-    };
+    const VENDOR = 'Google Inc. (AMD)';
+    const RENDERER =
+      'ANGLE (AMD, AMD Radeon 760M Graphics (0x00001900) Direct3D11 vs_5_0 ps_5_0, D3D11)';
+    // WebGL2 has its own prototype; patching only WebGL1 leaves the two
+    // disagreeing on the same machine, which is itself a tell.
+    for (const ctor of [window.WebGLRenderingContext, window.WebGL2RenderingContext]) {
+      if (!ctor || !ctor.prototype) continue;
+      const getParam = ctor.prototype.getParameter;
+      ctor.prototype.getParameter = function (p) {
+        // 37445 = UNMASKED_VENDOR_WEBGL, 37446 = UNMASKED_RENDERER_WEBGL
+        if (p === 37445 || p === 37446) {
+          let real = '';
+          try { real = String(getParam.call(this, 37446)); } catch (e) {}
+          if (real.indexOf('SwiftShader') !== -1) {
+            return p === 37445 ? VENDOR : RENDERER;
+          }
+        }
+        return getParam.call(this, p);
+      };
+    }
   } catch (e) {}
 })();
 """

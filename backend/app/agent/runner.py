@@ -217,7 +217,7 @@ async def run_agent(agent_run_id: uuid.UUID) -> None:
         status = AgentRunStatus.DRIVING if attempt == 1 else AgentRunStatus.REPAIRING
         await _set_status(agent_run_id, status, attempt=attempt)
 
-        outcome: dict = {"marks": [], "tokens": 0, "gave_up_reason": None}
+        outcome: dict = {"marks": [], "tokens": 0, "gave_up_reason": None, "blocked": False}
         task_plan = plan if not hint else {**plan, "summary": f"{plan.get('summary', '')}\n\n{hint}".strip()}
 
         async def _on_progress(name, arguments, text, _run_id=agent_run_id) -> None:
@@ -229,6 +229,7 @@ async def run_agent(agent_run_id: uuid.UUID) -> None:
             _outcome["tokens"] = result.tokens
             if result.gave_up:
                 _outcome["gave_up_reason"] = result.give_up_reason
+                _outcome["blocked"] = result.blocked
                 return
             if result.marks:
                 try:
@@ -245,7 +246,10 @@ async def run_agent(agent_run_id: uuid.UUID) -> None:
         if outcome["gave_up_reason"]:
             reason = outcome["gave_up_reason"]
             log.info("agent %s attempt %s gave up: %s", agent_run_id, attempt, reason)
-            if attempt >= MAX_ATTEMPTS:
+            # A bot wall is not a strategy error, so the repair loop has nothing
+            # to change — every further attempt would fail identically at the
+            # first navigation, on the user's money.
+            if outcome["blocked"] or attempt >= MAX_ATTEMPTS:
                 await _finish(agent_run_id, succeeded=False, reason=reason, tokens=total_tokens)
                 return
             # Feeds the next attempt a redacted transcript, not just the

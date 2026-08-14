@@ -13,8 +13,7 @@ from app.db import async_session
 from app.recorder.extraction import run_extraction
 from app.recorder.llm_extract import llm_fill_missing, semantic_extract
 from app.recorder.selector_cache import read_cache, upsert_cache
-from app.recorder import selector_compiler
-from app.recorder import stealth
+from app.recorder import blocked, selector_compiler, stealth, useragent
 
 log = logging.getLogger("recorder")
 
@@ -33,11 +32,6 @@ SELECTOR_VISIBILITY_POLL_MS = 250
 # by a click/press) before we begin interacting with the new page. Gives
 # heavy/SPA pages time to settle so selectors resolve against the final DOM.
 POST_NAV_WAIT_MS = 5_000
-
-DEFAULT_USER_AGENT = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
-)
 
 DEFAULT_VIEWPORT = {"width": 1280, "height": 800}
 
@@ -76,6 +70,10 @@ async def _open_context(
     context directly). Both paths carry the stealth launch args and a
     human-looking UA/locale/timezone; the caller injects STEALTH_INIT_JS."""
     args = stealth.launch_args(headless)
+    # Derived from the launched binary rather than pinned: the UA this used to
+    # hard-code (Chrome/126) was several major versions behind the browser
+    # actually sending it. See app.recorder.useragent.
+    user_agent = await useragent.resolve_user_agent(pw)
     if profile_dir is not None:
         # Warm-profile path: reuse the owner's recorder profile (cookies,
         # history, consistent fingerprint) and overlay the workflow's captured
@@ -85,7 +83,7 @@ async def _open_context(
             headless=headless,
             slow_mo=settings.replay_slow_mo_ms,
             args=args,
-            user_agent=DEFAULT_USER_AGENT,
+            user_agent=user_agent,
             viewport=viewport,
             locale=DEFAULT_LOCALE,
             timezone_id=DEFAULT_TIMEZONE,
@@ -100,7 +98,7 @@ async def _open_context(
 
     browser = await pw.chromium.launch(headless=headless, slow_mo=settings.replay_slow_mo_ms, args=args)
     context_kwargs: dict = {
-        "user_agent": DEFAULT_USER_AGENT,
+        "user_agent": user_agent,
         "viewport": viewport,
         "locale": DEFAULT_LOCALE,
         "timezone_id": DEFAULT_TIMEZONE,
@@ -444,7 +442,15 @@ async def replay_workflow(
 
                 if stype == "goto":
                     target = step.get("url_template") or step["url"]
-                    await page.goto(_resolve_url(target, params), wait_until="domcontentloaded")
+                    response = await page.goto(
+                        _resolve_url(target, params), wait_until="domcontentloaded"
+                    )
+                    # A bot wall otherwise surfaces further down as "none of the
+                    # candidate selectors matched" — technically true, useless
+                    # to act on. Fail here with the actual cause.
+                    wall = await blocked.detect(page, response)
+                    if wall is not None:
+                        raise ReplayError(wall.message())
                 elif stype == "click":
                     locator = await _locate(page, step.get("selectors", []))
                     await locator.click()

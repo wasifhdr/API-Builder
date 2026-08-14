@@ -17,7 +17,7 @@ from app.models.workflow import Workflow, WorkflowStatus
 from app.recorder.constants import RECORDED_EVENT_TYPES, VALUE_STEP_TYPES
 from app.recorder.extraction import run_extraction
 from app.recorder.profiles import get_profile_dir
-from app.recorder import stealth
+from app.recorder import blocked, stealth, useragent
 from app.recorder.schema_infer import infer_schema
 from app.recorder.selector_compiler import compile_from_pick, compile_root_from_pick
 from app.redis import redis_client
@@ -87,6 +87,9 @@ class RecordingSession:
         self._cancelled = False
         self._warned_popup = False
         self._warned_iframes = False
+        # Set when the start URL turned out to be behind a bot wall (see
+        # app.recorder.blocked); read by tests and surfaced as a warning event.
+        self._blocked = None
         self._authoring_task: asyncio.Task | None = None
         self._last_pick: dict | None = None
         # Monotonic time of the last recorded interaction (click/press/select).
@@ -148,6 +151,12 @@ class RecordingSession:
                         *stealth.launch_args(headless=self.headless),
                     ],
                     "no_viewport": True,
+                    # Without this the headless binary announces
+                    # "HeadlessChrome/<version>", which some edges (Cloudflare
+                    # on waltonbd.com, measured) refuse with a flat 403 before
+                    # any page JS runs. Headful is unaffected — which is why a
+                    # human could record a site the agent could not author.
+                    "user_agent": await useragent.resolve_user_agent(pw, channel),
                 }
                 if channel:
                     launch_kwargs["channel"] = channel
@@ -226,7 +235,14 @@ class RecordingSession:
 
         page.on("framenavigated", lambda frame: asyncio.create_task(on_frame_navigated(frame)))
 
-        await page.goto(start_url, wait_until="domcontentloaded")
+        response = await page.goto(start_url, wait_until="domcontentloaded")
+        # Surface a bot wall as a warning rather than letting the user (or the
+        # agent) stare at a block page wondering why nothing is on it. The
+        # session continues either way: a human may still want to look, and the
+        # agent's own pre-flight check in app.agent.driver ends the run.
+        self._blocked = await blocked.detect(page, response)
+        if self._blocked is not None:
+            await self._publish({"t": "warning", "message": self._blocked.message()})
         self._record_step({"type": "goto", "url": start_url})
         await self._publish({"t": "step_recorded", "step": self.steps[-1]})
 

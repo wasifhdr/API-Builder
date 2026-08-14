@@ -1,7 +1,7 @@
 # API Builder — Product Requirements Document
 
 **Version:** 1.0 · **Status:** describes the shipped v1 (Phases 0–9, T1–T7, W1–W6) plus the
-committed roadmap · **Owner:** Wasif Haider · **Context:** CSE226.1 course project, single-machine
+committed roadmap · **Owner:** Wasif Haider (2232829642) · **Context:** CSE226.1 course project, single-machine
 deployment.
 
 This PRD is the *product* view: who it's for, what it must do, and how success is judged. The

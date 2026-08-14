@@ -48,6 +48,40 @@ async def test_drive_records_give_up(fixture_site_url, fixture_page):
 
 
 @pytest.mark.asyncio
+async def test_drive_ends_on_a_block_page_without_calling_the_model(
+    fixture_site_url, fixture_page
+):
+    """The pre-flight check is what keeps a blocked site cheap: the model is
+    never consulted, so the run costs nothing beyond the browser launch."""
+    await fixture_page.goto(f"{fixture_site_url}/cf-blocked.html")
+    plan = {**PLAN, "url": f"{fixture_site_url}/cf-blocked.html"}
+
+    never = AsyncMock(side_effect=AssertionError("the model was called on a block page"))
+    with patch("app.agent.driver.complete_tools", never):
+        result = await drive(fixture_page, plan)
+
+    assert result.gave_up
+    assert result.blocked
+    assert result.turns == 0
+    assert result.tokens == 0
+    assert "blocking automated visits" in result.give_up_reason
+
+
+@pytest.mark.asyncio
+async def test_drive_reports_a_block_hit_mid_run(fixture_site_url, fixture_page):
+    """A site can also wall the agent partway through — after a search submits,
+    say. That must end the run flagged as blocked, not merely as gave_up."""
+    plan = {**PLAN, "url": f"{fixture_site_url}/search.html"}
+    turns = [_turn(ToolCall("1", "navigate", {"url": f"{fixture_site_url}/cf-blocked.html"}))]
+    with patch("app.agent.driver.complete_tools", AsyncMock(side_effect=turns)):
+        result = await drive(fixture_page, plan)
+
+    assert result.gave_up
+    assert result.blocked
+    assert result.turns == 1
+
+
+@pytest.mark.asyncio
 async def test_drive_stops_at_max_turns(fixture_site_url, fixture_page):
     plan = {**PLAN, "url": f"{fixture_site_url}/search.html"}
     endless = _turn(ToolCall("x", "scroll", {"direction": "down"}))

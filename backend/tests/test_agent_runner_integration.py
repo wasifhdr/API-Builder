@@ -207,3 +207,38 @@ async def test_run_agent_reaches_succeeded_against_the_fixture_site(
     balance, _ = await wallet.balances(user.id, db)
     price = await plans.agent_run_price(PlanTier.PRO, db)
     assert balance == Decimal("100.00") - price
+
+
+@pytest.mark.asyncio
+async def test_run_agent_stops_after_one_attempt_on_a_blocked_site(
+    db, make_user, redis, fixture_site_url,
+):
+    """A bot wall is unretryable: no change of strategy gets past it, so the
+    repair loop must not spend two more attempts (and two more sets of LLM
+    calls) reproducing the same failure. The model is never called at all —
+    the driver's pre-flight check ends the attempt first.
+    """
+    user = await _funded_pro_user(db, make_user)
+    run = await agent_runs.create_run(user, "search the blocked store for products", db)
+    await db.commit()
+
+    plan = {**_fake_plan(fixture_site_url), "url": f"{fixture_site_url}/cf-blocked.html"}
+    never = AsyncMock(side_effect=AssertionError("the model was called on a block page"))
+
+    async def _confirm_repeatedly():
+        message = json.dumps({"t": "confirm_url", "ok": True})
+        for _ in range(30):
+            await redis.publish(cmd_channel(run.id), message)
+            await asyncio.sleep(0.3)
+
+    with patch("app.agent.runner.build_plan", AsyncMock(return_value=plan)), \
+         patch("app.agent.driver.complete_tools", never):
+        confirm_task = asyncio.create_task(_confirm_repeatedly())
+        await run_agent(run.id)
+        confirm_task.cancel()
+
+    await db.refresh(run)
+    assert run.status == AgentRunStatus.FAILED
+    assert "blocking automated visits" in run.failure_reason
+    assert run.attempt == 1, "a blocked site must not be retried"
+    assert run.token_usage == 0

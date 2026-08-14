@@ -6,6 +6,7 @@ from playwright.async_api import Page
 
 from app.agent.observe import observe
 from app.agent.tools import TOOL_SCHEMAS, dispatch
+from app.recorder import blocked
 from app.llm.client import complete_tools, tool_result_message, user_message
 
 log = logging.getLogger("agent")
@@ -43,6 +44,10 @@ class DriveResult:
     give_up_reason: str | None = None
     turns: int = 0
     tokens: int = 0
+    # True when the run ended because the site refused automated visits. The
+    # runner reads this to skip its repair attempts: no change of strategy
+    # gets past a wall, so retrying only spends the user's money twice more.
+    blocked: bool = False
 
 
 def _task_brief(plan: dict) -> str:
@@ -69,6 +74,19 @@ async def drive(page: Page, plan: dict, max_turns: int = 25, on_progress=None) -
     """
     result = DriveResult()
     marks: list[str] = result.marks
+
+    # Pre-flight, before the first (billable) model call: a block page is still
+    # a page, so without this the model would spend its whole turn budget
+    # hunting for a search box on a 689-character "you have been blocked"
+    # document and then give up for an unrelated-sounding reason.
+    wall = await blocked.detect(page)
+    if wall is not None:
+        result.gave_up = True
+        result.blocked = True
+        result.give_up_reason = wall.message()
+        if on_progress is not None:
+            await on_progress("blocked", {}, wall.message())
+        return result
 
     observation = await observe(page)
     messages: list[dict] = [
@@ -115,6 +133,7 @@ async def drive(page: Page, plan: dict, max_turns: int = 25, on_progress=None) -
             if outcome.gave_up:
                 result.gave_up = True
                 result.give_up_reason = outcome.text
+                result.blocked = result.blocked or outcome.blocked
             if outcome.finished:
                 finished = True
                 break

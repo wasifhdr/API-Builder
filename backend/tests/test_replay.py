@@ -187,6 +187,56 @@ async def test_stealth_hides_automation_tells():
     assert result["data"]["chrome"] == "true"
 
 
+async def test_stealth_reports_a_consistent_gpu():
+    # Headless with --disable-gpu falls back to SwiftShader, which no desktop
+    # Chrome reports. The substitute has to agree with the rest of the
+    # fingerprint: a Windows UA needs a Direct3D/ANGLE renderer, and WebGL1 and
+    # WebGL2 must not disagree with each other on one machine.
+    html = """
+    <div id='v1'></div><div id='r1'></div><div id='v2'></div><div id='r2'></div>
+    <script>
+    function read(type) {
+      const c = document.createElement('canvas').getContext(type);
+      const dbg = c.getExtension('WEBGL_debug_renderer_info');
+      return [c.getParameter(dbg.UNMASKED_VENDOR_WEBGL),
+              c.getParameter(dbg.UNMASKED_RENDERER_WEBGL)];
+    }
+    const one = read('webgl'), two = read('webgl2');
+    document.getElementById('v1').textContent = one[0];
+    document.getElementById('r1').textContent = one[1];
+    document.getElementById('v2').textContent = two[0];
+    document.getElementById('r2').textContent = two[1];
+    </script>
+    """
+    snapshot = {
+        "steps": [
+            {"i": 0, "type": "goto", "url": f"data:text/html,{quote(html)}"},
+            {"i": 1, "type": "extract", "ref": "main"},
+        ],
+        "extraction": {
+            "main": {
+                "mode": "single",
+                "fields": [
+                    {"name": "vendor1", "selector": "#v1", "take": "text"},
+                    {"name": "renderer1", "selector": "#r1", "take": "text"},
+                    {"name": "vendor2", "selector": "#v2", "take": "text"},
+                    {"name": "renderer2", "selector": "#r2", "take": "text"},
+                ],
+            }
+        },
+    }
+    data = (await replay_workflow(snapshot, {}, None, uuid.uuid4()))["data"]
+
+    assert "SwiftShader" not in data["renderer1"]
+    assert "SwiftShader" not in data["renderer2"]
+    # Consistent with the Windows UA the same context sends.
+    assert "Direct3D11" in data["renderer1"]
+    assert "OpenGL" not in data["renderer1"]  # the old macOS-only string
+    # WebGL1 and WebGL2 describe the same machine.
+    assert data["vendor1"] == data["vendor2"]
+    assert data["renderer1"] == data["renderer2"]
+
+
 async def test_all_selectors_missing_raises_replay_error_with_artifacts(fixture_site_url):
     execution_id = uuid.uuid4()
     snapshot = {
