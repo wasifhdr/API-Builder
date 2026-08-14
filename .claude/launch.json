@@ -10,7 +10,7 @@
     {
       "name": "backend",
       "runtimeExecutable": "uv",
-      "runtimeArgs": ["run", "--directory", "backend", "uvicorn", "app.main:app", "--port", "8000"],
+      "runtimeArgs": ["run", "--directory", "backend", "python", "-m", "uvicorn", "app.main:app", "--port", "8000"],
       "port": 8000
     }
   ]

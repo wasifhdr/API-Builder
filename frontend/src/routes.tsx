@@ -11,6 +11,7 @@ import AdminPlans from './pages/AdminPlans'
 import AdminSms from './pages/AdminSms'
 import AdminTransactions from './pages/AdminTransactions'
 import AdminUsers from './pages/AdminUsers'
+import AgentBuilder from './pages/AgentBuilder'
 import ApiDetail from './pages/ApiDetail'
 import ApiDocs from './pages/ApiDocs'
 import Billing from './pages/Billing'
@@ -100,6 +101,22 @@ export default function AppRoutes() {
         element={
           <RequireAuth>
             <RecorderSession />
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/build"
+        element={
+          <RequireAuth>
+            <AgentBuilder />
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/build/:runId"
+        element={
+          <RequireAuth>
+            <AgentBuilder />
           </RequireAuth>
         }
       />

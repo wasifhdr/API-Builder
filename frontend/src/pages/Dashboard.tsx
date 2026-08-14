@@ -80,9 +80,14 @@ export default function Dashboard() {
         title={user.name ?? user.email}
         subline={user.role === 'super_admin' ? 'Super Admin' : undefined}
         actions={
-          <Link to="/recorder" className={buttonClasses('primary')}>
-            New recording
-          </Link>
+          <div className="flex gap-3">
+            <Link to="/build" className={buttonClasses('primary')}>
+              Build with AI
+            </Link>
+            <Link to="/recorder" className={buttonClasses('ghost')}>
+              New recording
+            </Link>
+          </div>
         }
       />
 

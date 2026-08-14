@@ -1,5 +1,5 @@
 import { type FormEvent, useState } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
+import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import AppShell from '../components/AppShell'
 import { Button, buttonClasses, CapsLabel, cardClasses, FieldLabel, Input } from '../components/ui'
 import { openPipWindow } from '../hooks/usePipWindow'
@@ -7,8 +7,12 @@ import { api, ApiError } from '../lib/api'
 
 export default function RecorderStart() {
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
   const [name, setName] = useState('')
-  const [startUrl, setStartUrl] = useState('')
+  // Prefilled when arriving from a failed agent build's "record it manually
+  // instead" link — the site is already known, no reason to make the user
+  // retype it.
+  const [startUrl, setStartUrl] = useState(searchParams.get('start_url') ?? '')
   const [error, setError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
 
