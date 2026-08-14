@@ -1,5 +1,6 @@
 import json
 import logging
+import re
 import uuid
 from dataclasses import dataclass, field
 
@@ -63,6 +64,29 @@ def missing_field_names(data: object, fields: list[dict] | None) -> list[str]:
     return [n for n in declared if all(_is_empty(row.get(n)) for row in rows)]
 
 
+_CONTENT_ANCHORED_RE = re.compile(r":has-text\(|\[href=")
+
+
+def content_anchored_fallbacks(fallbacks: list[dict]) -> list[dict]:
+    """Fallbacks where the SKIPPED candidate was anchored to page content —
+    visible text or an href.
+
+    Those literals were captured from the drive value's results, so they can
+    never match another value. Replay then falls through to a positional
+    candidate that matches a DIFFERENT element and proceeds without error,
+    which is exactly how a workflow that drilled into one search result got
+    published returning nulls.
+
+    Fallbacks on id/class candidates are deliberately left alone: those miss
+    for ordinary timing reasons, and failing a run over one would cost the user
+    an attempt for nothing.
+    """
+    return [
+        f for f in fallbacks
+        if any(_CONTENT_ANCHORED_RE.search(s) for s in f.get("skipped") or [])
+    ]
+
+
 async def verify_workflow(
     snapshot: dict,
     plan: dict,
@@ -81,7 +105,8 @@ async def verify_workflow(
 
     try:
         replay = await replay_workflow(
-            snapshot, params, None, uuid.uuid4(), headless=True, workflow_id=workflow_id
+            snapshot, params, None, uuid.uuid4(), headless=True,
+            workflow_id=workflow_id, record_fallbacks=True,
         )
     except ReplayError as exc:
         result.checks.append(CheckResult("replays", False, f"replay failed: {exc}"))
@@ -117,6 +142,16 @@ async def verify_workflow(
         "output is identical for a different parameter value — the workflow "
         "ignores its own parameter (likely a hardcoded URL)" if not differs
         else "output changed with the parameter",
+    ))
+
+    unstable = content_anchored_fallbacks(replay.get("selector_fallbacks") or [])
+    result.checks.append(CheckResult(
+        "stable_selectors", not unstable,
+        "; ".join(
+            f"step {f['step_index']} is anchored to drive-time page content "
+            f"({f['skipped'][0]}) and matched a different element via {f['used']}"
+            for f in unstable
+        ) if unstable else "no step depended on drive-time page content",
     ))
 
     return result

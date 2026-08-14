@@ -2,7 +2,11 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from app.agent.verify import missing_field_names, verify_workflow
+from app.agent.verify import (
+    content_anchored_fallbacks,
+    missing_field_names,
+    verify_workflow,
+)
 
 FIELDS = [{"name": "title"}, {"name": "price"}]
 
@@ -174,3 +178,60 @@ async def test_all_null_rows_fail_verification(fixture_site_url):
     check = next(c for c in result.checks if c.name == "fields_present")
     assert not check.passed
     assert "title" in check.detail and "price" in check.detail
+
+
+def test_a_skipped_text_selector_is_content_anchored():
+    fallbacks = [{"step_index": 3,
+                  "skipped": ['a:has-text("WNR-6D6-GDFS-DI")'],
+                  "used": "#products > div:nth-of-type(1) > a"}]
+    assert content_anchored_fallbacks(fallbacks) == fallbacks
+
+
+def test_a_skipped_href_selector_is_content_anchored():
+    fallbacks = [{"step_index": 3,
+                  "skipped": ['a[href="/product/4521"]'],
+                  "used": "#products > div:nth-of-type(1) > a"}]
+    assert content_anchored_fallbacks(fallbacks) == fallbacks
+
+
+def test_a_skipped_class_selector_is_a_flake_not_a_defect():
+    """Narrowing to content-anchored candidates is a false-positive filter: an
+    id/class candidate missing for timing reasons must not cost an attempt."""
+    fallbacks = [{"step_index": 2,
+                  "skipped": ["button.search-btn"],
+                  "used": "#search-form > button"}]
+    assert content_anchored_fallbacks(fallbacks) == []
+
+
+def test_no_fallbacks_is_no_finding():
+    assert content_anchored_fallbacks([]) == []
+
+
+def test_a_fallback_with_no_skipped_list_is_ignored():
+    assert content_anchored_fallbacks([{"step_index": 1, "used": "#x"}]) == []
+
+
+@pytest.mark.asyncio
+async def test_a_step_anchored_to_drive_content_fails_verification(fixture_site_url):
+    """Replays with `television` a workflow recorded against `refrigerator`.
+    The text-anchored click cannot match, a positional candidate does, and the
+    run must be rejected rather than quietly proceeding on the wrong element."""
+    snapshot = {
+        "steps": [
+            {"i": 0, "type": "goto",
+             "url": f"{fixture_site_url}/search.html?q=refrigerator",
+             "url_template": f"{fixture_site_url}/search.html?q={{query}}"},
+            {"i": 1, "type": "click", "selectors": [
+                'a:has-text("Blue Refrigerator")',
+                "#results > li:nth-of-type(1)",
+            ]},
+            {"i": 2, "type": "extract", "ref": "main"},
+        ],
+        "extraction": EXTRACTION,
+    }
+    result = await verify_workflow(snapshot, PLAN, DRIVE_DATA)
+
+    assert not result.passed
+    check = next(c for c in result.checks if c.name == "stable_selectors")
+    assert not check.passed
+    assert "step 1" in check.detail

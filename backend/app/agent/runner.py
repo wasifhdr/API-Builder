@@ -39,6 +39,12 @@ _STRATEGY_HINTS = {
         "The workflow failed to replay. Prefer stable, visible controls and "
         "avoid steps that depend on transient page state."
     ),
+    "stable_selectors": (
+        "A step was anchored to text or a link captured from the first "
+        "parameter value's results, so it can never match a different value. "
+        "Do not click an individual result to reach the data — extract from "
+        "the page the parameterized interaction itself produces."
+    ),
 }
 
 
