@@ -1,4 +1,11 @@
-from app.agent.runner import MAX_ATTEMPTS, build_repair_context, repair_hint, should_retry
+from app.agent.runner import (
+    MAX_ATTEMPTS,
+    _STRATEGY_HINTS,
+    build_repair_context,
+    repair_hint,
+    sample_hint_key,
+    should_retry,
+)
 from app.agent.verify import CheckResult, VerifyResult
 
 
@@ -71,3 +78,23 @@ def test_sample_failure_reason_rejects_a_sample_that_never_ran():
     assert sample_failure_reason(None, SAMPLE_FIELDS) == (
         "the marked elements produced no value for: title, price"
     )
+
+
+def test_sample_hint_key_is_has_rows_for_an_absent_sample():
+    assert sample_hint_key(None) == "has_rows"
+
+
+def test_sample_hint_key_is_has_rows_for_an_empty_sample():
+    assert sample_hint_key([]) == "has_rows"
+
+
+def test_sample_hint_key_is_fields_present_for_all_null_rows():
+    sample = [{"title": None, "price": None}]
+    assert sample_hint_key(sample) == "fields_present"
+
+
+def test_both_sample_hint_keys_exist_in_strategy_hints():
+    """A future rename of a hint key must fail here, loudly, rather than
+    raising KeyError at runtime on a user's run."""
+    assert "has_rows" in _STRATEGY_HINTS
+    assert "fields_present" in _STRATEGY_HINTS

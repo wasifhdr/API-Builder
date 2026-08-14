@@ -278,3 +278,21 @@ async def test_confirm_rejects_a_javascript_url_with_400(db, make_user):
             run.id, ConfirmUrlIn(ok=True, url="javascript:alert(1)"), user, db,
         )
     assert exc.value.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_confirm_rejects_a_cleared_url_with_400(db, make_user):
+    """A blank string means the user cleared the field and hit Confirm — that
+    must be rejected like any other invalid URL, not silently treated as
+    'no correction' (which is what an omitted url, i.e. None, means)."""
+    user = await _funded_pro(db, make_user)
+    run = AgentRun(user_id=user.id, prompt="p", status=AgentRunStatus.AWAITING_CONFIRM)
+    db.add(run)
+    await db.commit()
+    await db.refresh(run)
+
+    with pytest.raises(HTTPException) as exc:
+        await agent_api.confirm_url(
+            run.id, ConfirmUrlIn(ok=True, url=""), user, db,
+        )
+    assert exc.value.status_code == 400

@@ -82,7 +82,12 @@ async def confirm_url(
     await _owned_run(run_id, user, db)
 
     url = None
-    if body.ok and body.url:
+    # `body.url is not None` — not truthy — distinguishes the field being
+    # omitted (None: keep the planner's URL, e.g. the confirm-only flow that
+    # sends no url key at all) from the field being submitted blank (a user
+    # who cleared the input and hit Confirm). An empty/whitespace string must
+    # fail validation like any other bad URL, not be silently ignored.
+    if body.ok and body.url is not None:
         url = valid_start_url(body.url)
         if url is None:
             raise HTTPException(

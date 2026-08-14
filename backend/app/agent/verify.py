@@ -4,6 +4,7 @@ import re
 import uuid
 from dataclasses import dataclass, field
 
+from app.agent.planner import VALID_RESULT_SHAPES
 from app.recorder.replay import ReplayError, replay_workflow
 
 log = logging.getLogger("agent")
@@ -162,11 +163,31 @@ async def verify_workflow(
         else "output changed with the parameter",
     ))
 
-    unstable = content_anchored_fallbacks(replay.get("selector_fallbacks") or [])
-    result.checks.append(CheckResult(
-        "stable_selectors", not unstable,
-        _stable_selectors_detail(unstable) if unstable
-        else "no step depended on drive-time page content",
-    ))
+    # stable_selectors exists to catch a LIST task that drilled into one
+    # result: the recorder ranks a :has-text(...)/[href=] candidate above the
+    # structural one, so a step anchored to the drive value's own result text
+    # can never match a different parameter value at verify time. A DETAIL
+    # task is different on purpose — its drive brief tells the agent to reach
+    # the single record the request describes, which on most sites means
+    # clicking through exactly such a content-anchored selector, and when
+    # that selector misses at verify time and replay falls through to the
+    # structural candidate, it lands on the correct (only) record, not a
+    # wrong one. Outside "list" shape this check's failures are therefore
+    # false positives the repair loop cannot act on — its hint tells the
+    # agent not to click into a result, which is unsatisfiable for a detail
+    # lookup whose fields live only on that record's page — so the check is
+    # scoped to list-shaped plans. A missing/unrecognised result_shape
+    # defaults to "list", matching build_plan's own tolerant fallback, so an
+    # unshaped plan still gets the protection.
+    shape = plan.get("result_shape")
+    if shape not in VALID_RESULT_SHAPES:
+        shape = "list"
+    if shape == "list":
+        unstable = content_anchored_fallbacks(replay.get("selector_fallbacks") or [])
+        result.checks.append(CheckResult(
+            "stable_selectors", not unstable,
+            _stable_selectors_detail(unstable) if unstable
+            else "no step depended on drive-time page content",
+        ))
 
     return result

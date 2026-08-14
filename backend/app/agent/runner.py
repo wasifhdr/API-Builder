@@ -98,6 +98,20 @@ def repair_hint(result: VerifyResult) -> str:
     return "\n".join(parts)
 
 
+def sample_hint_key(sample: object) -> str:
+    """Picks which _STRATEGY_HINTS entry describes a bad sample.
+
+    Mirrors verify_workflow's split between has_rows and fields_present: an
+    empty/absent sample means the marked element never matched anything on
+    the page (wrong container), while a non-empty sample of null values means
+    it matched but nothing usable came out of it (wrong field). Those are
+    different fixes, so `sample_failure_reason`'s one failure string must not
+    always be paired with the same hint — a zero-row miss was getting the
+    "field is null" framing instead of the "mark the repeated container" one.
+    """
+    return "has_rows" if not sample else "fields_present"
+
+
 def sample_failure_reason(sample: object, fields: list[dict] | None) -> str | None:
     """Rejects an attempt whose marked elements produced nothing, before a
     verify replay is spent on it.
@@ -338,7 +352,7 @@ async def run_agent(agent_run_id: uuid.UUID) -> None:
                 )
                 return
             hint = build_repair_context(
-                session.steps, f"{bad_sample}\n{_STRATEGY_HINTS['fields_present']}"
+                session.steps, f"{bad_sample}\n{_STRATEGY_HINTS[sample_hint_key(session.final_sample)]}"
             )
             continue
 

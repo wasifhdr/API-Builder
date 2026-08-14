@@ -18,6 +18,7 @@ PLAN = {
         "description": None,
     }],
     "fields": [{"name": "title", "type": "string"}, {"name": "price", "type": "string"}],
+    "result_shape": "list",
 }
 
 EXTRACTION = {
@@ -248,3 +249,31 @@ async def test_a_step_anchored_to_drive_content_fails_verification(fixture_site_
     check = next(c for c in result.checks if c.name == "stable_selectors")
     assert not check.passed
     assert "step 1" in check.detail
+
+
+@pytest.mark.asyncio
+async def test_a_detail_task_is_not_failed_for_the_same_content_anchored_click(fixture_site_url):
+    """Same fixture-site snapshot shape as
+    test_a_step_anchored_to_drive_content_fails_verification, but for a
+    detail-shape plan: clicking through the content-anchored candidate is
+    exactly what the drive brief instructs for a single-record lookup, and
+    when replay falls through to the structural candidate it lands on the
+    correct (only) record. stable_selectors must not run at all here — its
+    finding would be a false positive the repair loop cannot act on."""
+    detail_plan = {**PLAN, "result_shape": "detail"}
+    snapshot = {
+        "steps": [
+            {"i": 0, "type": "goto",
+             "url": f"{fixture_site_url}/search.html?q=refrigerator",
+             "url_template": f"{fixture_site_url}/search.html?q={{query}}"},
+            {"i": 1, "type": "click", "selectors": [
+                'a:has-text("Blue Refrigerator")',
+                "#results > li:nth-of-type(1)",
+            ]},
+            {"i": 2, "type": "extract", "ref": "main"},
+        ],
+        "extraction": EXTRACTION,
+    }
+    result = await verify_workflow(snapshot, detail_plan, DRIVE_DATA)
+
+    assert "stable_selectors" not in [c.name for c in result.checks]
