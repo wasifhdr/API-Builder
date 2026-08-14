@@ -87,6 +87,24 @@ def content_anchored_fallbacks(fallbacks: list[dict]) -> list[dict]:
     ]
 
 
+def _stable_selectors_detail(unstable: list[dict]) -> str:
+    """Message for the stable_selectors check.
+
+    `skipped` is rank-ordered, but the content-anchored candidate is not
+    always first — a step can carry a class/id candidate ahead of it that
+    missed for ordinary timing reasons. Naming skipped[0] there would blame
+    the wrong selector and misdirect the repair loop that reads this string,
+    so the candidate that actually matched _CONTENT_ANCHORED_RE is looked up
+    directly.
+    """
+    return "; ".join(
+        f"step {f['step_index']} is anchored to drive-time page content "
+        f"({next(s for s in f['skipped'] if _CONTENT_ANCHORED_RE.search(s))}) "
+        f"and matched a different element via {f['used']}"
+        for f in unstable
+    )
+
+
 async def verify_workflow(
     snapshot: dict,
     plan: dict,
@@ -147,11 +165,8 @@ async def verify_workflow(
     unstable = content_anchored_fallbacks(replay.get("selector_fallbacks") or [])
     result.checks.append(CheckResult(
         "stable_selectors", not unstable,
-        "; ".join(
-            f"step {f['step_index']} is anchored to drive-time page content "
-            f"({f['skipped'][0]}) and matched a different element via {f['used']}"
-            for f in unstable
-        ) if unstable else "no step depended on drive-time page content",
+        _stable_selectors_detail(unstable) if unstable
+        else "no step depended on drive-time page content",
     ))
 
     return result

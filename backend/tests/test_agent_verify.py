@@ -3,6 +3,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from app.agent.verify import (
+    _stable_selectors_detail,
     content_anchored_fallbacks,
     missing_field_names,
     verify_workflow,
@@ -209,6 +210,18 @@ def test_no_fallbacks_is_no_finding():
 
 def test_a_fallback_with_no_skipped_list_is_ignored():
     assert content_anchored_fallbacks([{"step_index": 1, "used": "#x"}]) == []
+
+
+def test_the_detail_names_the_content_anchored_candidate_not_skipped_zero():
+    """A step can rank a class candidate ahead of the content-anchored one —
+    it missed for ordinary timing reasons and is not the defect. The message
+    must still name the content-anchored candidate, not skipped[0]."""
+    fallbacks = [{"step_index": 4,
+                  "skipped": ["button.old-class", 'a:has-text("Product X")'],
+                  "used": "#results > div:nth-of-type(2) > a"}]
+    detail = _stable_selectors_detail(fallbacks)
+    assert 'a:has-text("Product X")' in detail
+    assert "button.old-class" not in detail
 
 
 @pytest.mark.asyncio
