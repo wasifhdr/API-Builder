@@ -28,22 +28,38 @@ DRIVE_SYSTEM = (
     "be recognised and turned into a parameter afterwards.\n"
     "- Marking data to extract is a TWO-STEP sequence, always in this order: "
     "(1) call mark_target ONCE on a repeating container — one representative "
-    "product/result row, not every row. (2) call mark_target ONCE MORE for "
-    "EACH requested data field, in the order they were listed, on the specific "
-    "element holding that field's value inside that same row (e.g. the title "
-    "text itself, then the price text itself) — never mark the row again for "
-    "these. Observations list these field elements underneath their row, "
-    "labelled 'field inside ref_N'. If you cannot find a ref for some field, "
-    "skip marking it rather than reusing the row's or another field's ref.\n"
+    "product/result row, not every row — with no 'field' argument. (2) call "
+    "mark_target ONCE MORE for EACH requested data field, passing "
+    "field=<the exact declared field name>, on the specific element holding "
+    "that field's value inside that same row (e.g. the title text itself, "
+    "then the price text itself) — never mark the row again for these. "
+    "Observations list these field elements underneath their row, labelled "
+    "'field inside ref_N'.\n"
+    "- For a field whose value is a URL rather than visible text, mark the "
+    "<a> and pass take='attr:href'; for an image field mark the <img> and pass "
+    "take='attr:src'. Marking a link and leaving take as text yields the link "
+    "LABEL, not the URL.\n"
+    "- done is REJECTED while any requested field is unmarked. If no element "
+    "holds a field's value exactly, mark the closest element that CONTAINS it "
+    "rather than abandoning the task — partial data beats no API. Imperfect "
+    "or inconsistent results (mixed-in items, missing prices on some rows) are "
+    "normal web pages, not a reason to stop.\n"
     "- Refs come from the most recent observation only. After any navigation, "
     "the previous refs are void.\n"
     "- If the task needs a login, call give_up — you must never enter credentials."
 )
 
 
+# How many times `done` may be bounced back for unmarked fields before it is
+# honoured anyway. Without a ceiling a field that genuinely is not on the page
+# (the model is right, the plan is wrong) would burn every remaining turn; with
+# it, the run still finishes and the missing field surfaces at verify instead.
+MAX_DONE_REFUSALS = 2
+
+
 @dataclass
 class DriveResult:
-    marks: list[str] = field(default_factory=list)
+    marks: list[dict] = field(default_factory=list)
     gave_up: bool = False
     give_up_reason: str | None = None
     turns: int = 0
@@ -111,7 +127,8 @@ async def drive(
     requested after they hit stop.
     """
     result = DriveResult()
-    marks: list[str] = result.marks
+    marks: list[dict] = result.marks
+    done_refusals = 0
 
     if should_stop is not None and await should_stop():
         result.cancelled = True
@@ -172,7 +189,13 @@ async def drive(
 
         finished = False
         for call in turn.tool_calls:
-            outcome = await dispatch(page, call.name, call.arguments, marks)
+            outcome = await dispatch(
+                page, call.name, call.arguments, marks,
+                fields=plan.get("fields"),
+                enforce_marks=done_refusals < MAX_DONE_REFUSALS,
+            )
+            if call.name == "done" and not outcome.finished:
+                done_refusals += 1
             if on_progress is not None:
                 await on_progress(call.name, call.arguments, outcome.text)
 

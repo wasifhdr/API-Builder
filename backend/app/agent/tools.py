@@ -3,6 +3,7 @@ from dataclasses import dataclass
 
 from playwright.async_api import Page
 
+from app.agent.extract import assign_marks, normalize_marks
 from app.agent.observe import Observation, RefNotFound, observe, resolve_ref
 from app.recorder import blocked
 
@@ -48,10 +49,19 @@ TOOL_SCHEMAS: list[dict] = [
         {"direction": {"type": "string", "enum": ["down", "up"]}}, ["direction"]),
     _fn("mark_target", "Mark the element with the given ref as part of the data "
         "the API should extract. First call: the repeating container/row "
-        "(one representative row, not every row). Then one more call per "
-        "requested field, on that field's own element within the row.",
-        {"ref": {"type": "string"}}, ["ref"]),
-    _fn("done", "The workflow is complete and the target data is on screen.", {}, []),
+        "(one representative row, not every row) — omit 'field' for it. Then "
+        "one more call per requested field, on that field's own element within "
+        "the row, passing 'field' with that field's exact declared name. Pass "
+        "'take' to say what to read off the element: 'text' for visible text, "
+        "'attr:href' for a link's URL, 'attr:src' for an image's URL. If you "
+        "omit 'take' a sensible one is inferred from the element.",
+        {"ref": {"type": "string"},
+         "field": {"type": "string"},
+         "take": {"type": "string", "enum": ["text", "html", "attr:href", "attr:src"]}},
+        ["ref"]),
+    _fn("done", "The workflow is complete and every requested field has been "
+        "marked with mark_target. Rejected if any declared field is still "
+        "unmarked.", {}, []),
     _fn("give_up", "Stop: this task cannot be completed (for example a login wall).",
         {"reason": {"type": "string"}}, ["reason"]),
 ]
@@ -66,7 +76,24 @@ class ToolOutcome:
     blocked: bool = False
 
 
-async def dispatch(page: Page, name: str, arguments: dict, marks: list[str]) -> ToolOutcome:
+def unmarked_fields(marks: list, fields: list[dict] | None) -> list[str]:
+    """Declared fields that no mark_target call covers yet.
+
+    marks[0] is the row container, so only marks[1:] carry fields. The mapping
+    itself is assign_marks', so this gate and the extraction builder can never
+    disagree about which fields are covered.
+    """
+    declared = [f["name"] for f in fields or []]
+    if not declared or not marks:
+        return declared
+    assigned = assign_marks(normalize_marks(marks)[1:], fields)
+    return [name for name in declared if name not in assigned]
+
+
+async def dispatch(
+    page: Page, name: str, arguments: dict, marks: list,
+    fields: list[dict] | None = None, enforce_marks: bool = True,
+) -> ToolOutcome:
     """Executes one agent tool call against the live page.
 
     Never raises: a bad ref, a missing element, or a navigation error is
@@ -74,6 +101,31 @@ async def dispatch(page: Page, name: str, arguments: dict, marks: list[str]) -> 
     run on a recoverable mistake would waste the whole authoring attempt.
     """
     if name == "done":
+        # The refusal budget exists for a field that genuinely is not on the
+        # page, so the drive can still finish. It must NOT extend to a drive
+        # that marked NOTHING: that cannot produce an API at all, so spending
+        # the remaining turns is strictly better than ending empty. Letting the
+        # budget cover this had the model answer `done` three times in a row
+        # and finish with no marks, burning a full attempt each time.
+        missing = unmarked_fields(marks, fields) if (enforce_marks or not marks) else []
+        if missing and not marks:
+            # The single most expensive way a run used to fail: the model
+            # finished the interaction, called done without marking anything,
+            # and the runner reported "the marked elements produced no value
+            # for: <every field>" — from an extraction that was never built.
+            return ToolOutcome(text=(
+                "not done: you have not marked any data yet. Call mark_target on the "
+                "repeating result row first, then once per requested field "
+                f"({', '.join(missing)}) with that field's name."
+            ))
+        if missing:
+            return ToolOutcome(text=(
+                f"not done: nothing is marked for {', '.join(missing)}. Call mark_target "
+                "on the element holding each of those values, passing field=<name>. "
+                "If no element holds one exactly, mark the closest element that "
+                "contains it — a partially populated field is still useful, and "
+                "give_up is only for login walls and blocked pages."
+            ))
         return ToolOutcome(text="done", finished=True)
     if name == "give_up":
         reason = arguments.get("reason") or "no reason given"
@@ -105,8 +157,23 @@ async def dispatch(page: Page, name: str, arguments: dict, marks: list[str]) -> 
         elif name == "mark_target":
             ref = arguments.get("ref", "")
             await resolve_ref(page, ref)  # validates it exists
-            marks.append(ref)
-            return ToolOutcome(text=f"marked {ref} as an extraction target")
+            if not marks and arguments.get("field"):
+                # marks[0] is always consumed as the row container. Letting a
+                # field-named mark land there would make the row the field's
+                # own element AND leave that field unmarked.
+                return ToolOutcome(text=(
+                    "not marked: the first mark_target must be the repeating result row, "
+                    "with no 'field' argument. Mark the row, then mark "
+                    f"{arguments['field']} inside it."
+                ))
+            mark: dict = {"ref": ref}
+            if arguments.get("field"):
+                mark["field"] = str(arguments["field"])
+            if arguments.get("take"):
+                mark["take"] = str(arguments["take"])
+            marks.append(mark)
+            label = f" for {mark['field']}" if "field" in mark else " as the result row"
+            return ToolOutcome(text=f"marked {ref}{label}")
         else:
             return ToolOutcome(text=f"unknown tool {name!r}")
     except RefNotFound as exc:

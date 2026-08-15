@@ -4,7 +4,14 @@ import pytest
 import pytest_asyncio
 from playwright.async_api import async_playwright
 
-from app.agent.extract import ExtractionError, build_extraction, pick_context_for_ref
+from app.agent.extract import (
+    ExtractionError,
+    assign_marks,
+    build_extraction,
+    normalize_marks,
+    pick_context_for_ref,
+    resolve_take,
+)
 from app.agent.observe import observe
 from app.recorder.session import INJECTED_JS_PATH
 
@@ -12,6 +19,84 @@ PLAN = {
     "parameters": [],
     "fields": [{"name": "title", "type": "string"}, {"name": "price", "type": "string"}],
 }
+
+LINK_FACTS = {"href": "/p/1", "src": None, "text": "Smart Television"}
+IMAGE_FACTS = {"href": None, "src": "/img/1.jpg", "text": ""}
+TEXT_FACTS = {"href": None, "src": None, "text": "38000"}
+
+
+def test_assign_marks_binds_named_marks_out_of_order():
+    declared = [{"name": "title"}, {"name": "price"}]
+    title, price = {"ref": "a", "field": "title"}, {"ref": "b", "field": "price"}
+    assert assign_marks([price, title], declared) == {"title": title, "price": price}
+
+
+def test_assign_marks_tolerates_a_loosely_named_field():
+    declared = [{"name": "room_number"}]
+    mark = {"ref": "a", "field": "Room Number"}
+    assert assign_marks([mark], declared) == {"room_number": mark}
+
+
+def test_assign_marks_demotes_an_unrecognised_name_to_positional():
+    """A field name matching nothing declared is still a mark of *something* —
+    dropping it would leave the field with no selectors at all."""
+    declared = [{"name": "title"}]
+    mark = {"ref": "a", "field": "headline_text"}
+    assert assign_marks([mark], declared) == {"title": mark}
+
+
+def test_assign_marks_is_positional_when_no_mark_names_a_field():
+    declared = [{"name": "title"}, {"name": "price"}]
+    first, second = {"ref": "a"}, {"ref": "b"}
+    assert assign_marks([first, second], declared) == {"title": first, "price": second}
+
+
+def test_assign_marks_leaves_an_uncovered_field_out():
+    declared = [{"name": "title"}, {"name": "price"}]
+    assert assign_marks([{"ref": "a", "field": "price"}], declared) == {
+        "price": {"ref": "a", "field": "price"}
+    }
+
+
+def test_normalize_marks_accepts_bare_refs():
+    assert normalize_marks(["ref_1", "ref_2"]) == [{"ref": "ref_1"}, {"ref": "ref_2"}]
+
+
+def test_normalize_marks_keeps_field_and_take():
+    marks = [{"ref": "ref_1", "field": "url", "take": "attr:href"}]
+    assert normalize_marks(marks) == marks
+
+
+def test_normalize_marks_drops_entries_without_a_ref():
+    assert normalize_marks([{"field": "title"}, None, "ref_2"]) == [{"ref": "ref_2"}]
+
+
+def test_resolve_take_honours_an_explicit_take():
+    assert resolve_take("title", "attr:href", TEXT_FACTS) == "attr:href"
+
+
+def test_resolve_take_ignores_an_unsupported_take():
+    assert resolve_take("price", "attr:data-cost", TEXT_FACTS) == "text"
+
+
+def test_resolve_take_reads_href_for_a_url_field_on_a_link():
+    assert resolve_take("url", None, LINK_FACTS) == "attr:href"
+
+
+def test_resolve_take_reads_src_for_an_image_field():
+    assert resolve_take("image_url", None, IMAGE_FACTS) == "attr:src"
+
+
+def test_resolve_take_falls_back_to_an_attribute_when_there_is_no_text():
+    assert resolve_take("thing", None, IMAGE_FACTS) == "attr:src"
+
+
+def test_resolve_take_stays_text_for_an_ordinary_field():
+    assert resolve_take("price", None, TEXT_FACTS) == "text"
+
+
+def test_resolve_take_does_not_hijack_a_link_whose_text_is_the_value():
+    assert resolve_take("title", None, LINK_FACTS) == "text"
 
 
 @pytest_asyncio.fixture
@@ -101,6 +186,28 @@ async def test_built_config_actually_extracts(fixture_site_url, recorder_page):
 
     assert len(rows) >= 2
     assert {r["title"] for r in rows} == {"Smart Television", "Basic Television"}
+
+
+@pytest.mark.asyncio
+async def test_named_marks_bind_to_their_field_regardless_of_order(
+    fixture_site_url, recorder_page
+):
+    """The model marks price before title. Positional matching labelled the
+    price element 'title' and vice versa — the API then returned real data
+    under the wrong keys, which no null-check upstream can detect."""
+    from app.recorder.extraction import run_extraction
+
+    row_ref, title_ref, price_ref = await _mark_row_and_fields(recorder_page, fixture_site_url)
+    marks = [
+        {"ref": row_ref},
+        {"ref": price_ref, "field": "price"},
+        {"ref": title_ref, "field": "title"},
+    ]
+    config = await build_extraction(recorder_page, marks, PLAN)
+    rows = await run_extraction(recorder_page, config["main"])
+
+    assert {r["title"] for r in rows} == {"Smart Television", "Basic Television"}
+    assert all(r["price"] and r["price"] != r["title"] for r in rows)
 
 
 @pytest.mark.asyncio

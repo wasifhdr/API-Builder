@@ -21,7 +21,12 @@ from app.services import agent_runs
 log = logging.getLogger("agent")
 
 MAX_ATTEMPTS = 3
-WALL_CLOCK_SECONDS = 600
+# Budget for the WHOLE run, all attempts included. Sized for the slowest
+# provider in use rather than the fastest: a hosted 30B vision model spends
+# minutes per drive turn, and at 600s a run that was progressing normally was
+# killed mid-second-attempt and reported as "exceeded the time budget". Lower
+# it for a fast provider if a run should fail sooner.
+WALL_CLOCK_SECONDS = 1800
 MAX_START_URL_CHARS = 2048
 # Outlives the longest possible run (WALL_CLOCK_SECONDS plus the confirmation
 # gate's timeout), so a stop request can never expire while the run it targets
@@ -256,6 +261,31 @@ async def _cancel(run_id: uuid.UUID, tokens: int = 0) -> None:
 
 
 async def run_agent(agent_run_id: uuid.UUID) -> None:
+    """Guarantees the run reaches a terminal state.
+
+    The worker's consume loop only logs a handler exception
+    (app.workers.main), so anything escaping _run_agent leaves the row
+    non-terminal — the card spins on "driving" forever and the user never
+    learns the run died. The common way in is an unreachable start URL: the
+    planner guesses a domain that does not resolve, page.goto raises
+    ERR_NAME_NOT_RESOLVED out of RecordingSession.run(), and nothing below
+    catches it. finish_run is idempotent, so this is inert when _run_agent
+    already finished the run itself.
+    """
+    try:
+        await _run_agent(agent_run_id)
+    except Exception as exc:  # noqa: BLE001 - the last line before a stuck run
+        log.exception("agent %s crashed", agent_run_id)
+        # First line only: a Playwright error carries a multi-line call log
+        # that would swamp the failure card.
+        detail = str(exc).splitlines()[0][:300] if str(exc) else exc.__class__.__name__
+        await _finish(
+            agent_run_id, succeeded=False,
+            reason=f"the run failed unexpectedly: {detail}", tokens=0,
+        )
+
+
+async def _run_agent(agent_run_id: uuid.UUID) -> None:
     """Drives an autonomous authoring run end to end: plan, confirm, then
     drive -> distill -> extract -> verify, repairing with a strategy hint on
     failure up to MAX_ATTEMPTS or WALL_CLOCK_SECONDS, whichever comes first.
@@ -333,6 +363,14 @@ async def run_agent(agent_run_id: uuid.UUID) -> None:
     total_tokens = 0
     last_verify: VerifyResult | None = None
     hint = ""
+    # Every tool call the model made, across all attempts. The column existed
+    # but nothing ever wrote it, so a failed run left no record of WHAT the
+    # agent did — "the agent never marked any data to extract" told you the
+    # outcome with no way to see whether it looked for the data and missed, or
+    # answered `done` on repeat. Tool names and result text only, never
+    # arguments: this is the one place drive-time parameter values would
+    # otherwise be persisted.
+    transcript: list[dict] = []
 
     for attempt in range(1, MAX_ATTEMPTS + 1):
         if await cancel_requested(agent_run_id):
@@ -354,7 +392,11 @@ async def run_agent(agent_run_id: uuid.UUID) -> None:
             "cancelled": False,
         }
 
-        async def _on_progress(name, arguments, text, _run_id=agent_run_id) -> None:
+        async def _on_progress(name, arguments, text, _run_id=agent_run_id,
+                               _attempt=attempt) -> None:
+            transcript.append({
+                "attempt": _attempt, "tool": name, "detail": (text or "")[:300],
+            })
             await publish(_run_id, {"t": "step", "tool": name, "detail": text})
 
         async def _should_stop(_run_id=agent_run_id) -> bool:
@@ -389,6 +431,16 @@ async def run_agent(agent_run_id: uuid.UUID) -> None:
         await session.run()
         total_tokens += outcome["tokens"]
 
+        # Persisted per attempt, not once at the end: every branch below can
+        # terminate the run, and a transcript written only on the happy path
+        # would be missing from exactly the failures it exists to explain.
+        # Replaced wholesale — JSONB columns are never mutated in place.
+        async with async_session() as db:
+            run = await db.get(AgentRun, agent_run_id)
+            if run is not None:
+                run.transcript = list(transcript)
+                await db.commit()
+
         if outcome["cancelled"] or await cancel_requested(agent_run_id):
             await _cancel(agent_run_id, total_tokens)
             return
@@ -409,7 +461,15 @@ async def run_agent(agent_run_id: uuid.UUID) -> None:
             hint = build_repair_context(session.steps, reason)
             continue
 
-        bad_sample = sample_failure_reason(session.final_sample, plan.get("fields"))
+        # An empty extraction here means the drive ended with nothing marked
+        # (build_extraction failing sets gave_up_reason and returns above), so
+        # there is no config and final_sample was never computed. Reporting
+        # that as "the marked elements produced no value" named every declared
+        # field and pointed at an extraction that does not exist.
+        if not session.extraction.get("main"):
+            bad_sample = "the agent never marked any data to extract"
+        else:
+            bad_sample = sample_failure_reason(session.final_sample, plan.get("fields"))
         if bad_sample:
             log.info("agent %s attempt %s bad sample: %s", agent_run_id, attempt, bad_sample)
             if attempt >= MAX_ATTEMPTS:

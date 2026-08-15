@@ -69,8 +69,22 @@ async def test_authors_a_walton_product_search_api(db, make_user, redis):
     await db.commit()
 
     async def _confirm_repeatedly():
-        message = json.dumps({"t": "confirm_url", "ok": True})
-        for _ in range(60):
+        # Corrects the URL at the gate rather than blind-confirming the
+        # planner's guess, because that IS the product's flow — the gate exists
+        # so a human fixes a wrong domain before the browser opens. Blind
+        # confirmation made this test depend on the planner model's domain
+        # recall (Qwen3 VL 30B resolves this prompt to walton.com.bd, which
+        # does not resolve) instead of on what it is here to check: drive ->
+        # distill -> extract -> verify.
+        message = json.dumps({
+            "t": "confirm_url", "ok": True, "url": "https://www.waltonbd.com/",
+        })
+        # Publishes until cancelled rather than for a fixed 30s: the gate has
+        # no backlog (Redis pub/sub drops anything published before the runner
+        # subscribes), and a slow planner reaches the gate long after a fixed
+        # window has closed — the run then sat out the full 300s confirmation
+        # timeout and came back cancelled with 0 attempts.
+        while True:
             await redis_client.publish(cmd_channel(run.id), message)
             await asyncio.sleep(0.5)
 

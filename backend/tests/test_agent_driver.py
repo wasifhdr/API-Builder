@@ -2,7 +2,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from app.agent.driver import _task_brief, drive
+from app.agent.driver import MAX_DONE_REFUSALS, _task_brief, drive
 from app.llm.client import ToolCall, TurnResult
 
 
@@ -18,6 +18,12 @@ PLAN = {
     "fields": [{"name": "title", "type": "string"}],
 }
 
+# `done` is gated on every declared field being marked. These loop-mechanics
+# tests are about turn handling, not the marking contract (which
+# tests/test_agent_tools.py covers at the dispatch level), so they declare no
+# fields and leave the gate a no-op rather than restating it in each one.
+NO_FIELD_PLAN = {**PLAN, "fields": []}
+
 
 @pytest.mark.asyncio
 async def test_drive_runs_tool_calls_until_done(fixture_site_url, fixture_page):
@@ -25,15 +31,70 @@ async def test_drive_runs_tool_calls_until_done(fixture_site_url, fixture_page):
     turns = [
         _turn(ToolCall("1", "navigate", {"url": f"{fixture_site_url}/search.html?q=television"})),
         _turn(ToolCall("2", "mark_target", {"ref": "ref_0"})),
-        _turn(ToolCall("3", "done", {})),
+        # Same ref for the field mark: which element it is does not matter to
+        # the loop, and reusing ref_0 keeps the test off the ref numbering the
+        # fixture page happens to produce.
+        _turn(ToolCall("3", "mark_target", {"ref": "ref_0", "field": "title"})),
+        _turn(ToolCall("4", "done", {})),
     ]
     with patch("app.agent.driver.complete_tools", AsyncMock(side_effect=turns)):
         result = await drive(fixture_page, plan)
 
-    assert result.marks == ["ref_0"]
+    assert result.marks == [{"ref": "ref_0"}, {"ref": "ref_0", "field": "title"}]
     assert not result.gave_up
-    assert result.turns == 3
-    assert result.tokens == 30
+    assert result.turns == 4
+    assert result.tokens == 40
+
+
+@pytest.mark.asyncio
+async def test_drive_refuses_done_until_every_field_is_marked(fixture_site_url, fixture_page):
+    """Calling done with only the row marked used to end the drive with no
+    field selectors at all, which surfaced to the user as an API returning
+    nulls. The refusal is what gives the model a chance to correct itself."""
+    plan = {**PLAN, "url": f"{fixture_site_url}/search.html"}
+    turns = [
+        _turn(ToolCall("1", "mark_target", {"ref": "ref_0"})),
+        _turn(ToolCall("2", "done", {})),  # refused - title is unmarked
+        _turn(ToolCall("3", "mark_target", {"ref": "ref_0", "field": "title"})),
+        _turn(ToolCall("4", "done", {})),  # honoured
+    ]
+    with patch("app.agent.driver.complete_tools", AsyncMock(side_effect=turns)):
+        result = await drive(fixture_page, plan, max_turns=8)
+
+    assert result.turns == 4
+    assert [m.get("field") for m in result.marks] == [None, "title"]
+
+
+@pytest.mark.asyncio
+async def test_drive_honours_done_once_the_refusal_budget_is_spent(
+    fixture_site_url, fixture_page
+):
+    """A field that genuinely is not on the page must not burn every remaining
+    turn — after MAX_DONE_REFUSALS the drive ends and verify reports the gap."""
+    plan = {**PLAN, "url": f"{fixture_site_url}/search.html"}
+    turns = [
+        _turn(ToolCall("0", "mark_target", {"ref": "ref_0"})),
+        *[_turn(ToolCall(str(i), "done", {})) for i in range(1, 5)],
+    ]
+    with patch("app.agent.driver.complete_tools", AsyncMock(side_effect=turns)):
+        result = await drive(fixture_page, plan, max_turns=8)
+
+    assert result.turns == MAX_DONE_REFUSALS + 2  # the row mark, then the dones
+    assert not result.gave_up
+
+
+@pytest.mark.asyncio
+async def test_drive_never_finishes_with_nothing_marked(fixture_site_url, fixture_page):
+    """Repeating `done` must not end the attempt empty once the refusal budget
+    is spent — an unmarked drive cannot produce an API, so it runs the turns
+    out instead."""
+    plan = {**PLAN, "url": f"{fixture_site_url}/search.html"}
+    endless = _turn(ToolCall("x", "done", {}))
+    with patch("app.agent.driver.complete_tools", AsyncMock(return_value=endless)):
+        result = await drive(fixture_page, plan, max_turns=5)
+
+    assert result.turns == 5, "done was honoured despite nothing being marked"
+    assert result.marks == []
 
 
 @pytest.mark.asyncio
@@ -135,7 +196,7 @@ async def test_drive_stops_at_max_turns(fixture_site_url, fixture_page):
 
 @pytest.mark.asyncio
 async def test_drive_treats_a_textonly_turn_as_a_nudge(fixture_site_url, fixture_page):
-    plan = {**PLAN, "url": f"{fixture_site_url}/search.html"}
+    plan = {**NO_FIELD_PLAN, "url": f"{fixture_site_url}/search.html"}
     turns = [_turn(text="I am thinking"), _turn(ToolCall("1", "done", {}))]
     with patch("app.agent.driver.complete_tools", AsyncMock(side_effect=turns)):
         result = await drive(fixture_page, plan, max_turns=5)
@@ -149,7 +210,7 @@ async def test_drive_echoes_provider_extra_content_on_the_next_turn(fixture_site
     # gone by without their thought_signature echoed back — a short mocked
     # conversation never hits that limit, so this checks the echo directly
     # rather than relying on the API to eventually reject a missing one.
-    plan = {**PLAN, "url": f"{fixture_site_url}/search.html"}
+    plan = {**NO_FIELD_PLAN, "url": f"{fixture_site_url}/search.html"}
     extra = {"google": {"thought_signature": "sig-1"}}
     turns = [
         _turn(ToolCall("1", "scroll", {"direction": "down"}, raw_extra=extra)),
@@ -166,7 +227,7 @@ async def test_drive_echoes_provider_extra_content_on_the_next_turn(fixture_site
 
 @pytest.mark.asyncio
 async def test_drive_calls_on_progress_for_each_tool_call(fixture_site_url, fixture_page):
-    plan = {**PLAN, "url": f"{fixture_site_url}/search.html"}
+    plan = {**NO_FIELD_PLAN, "url": f"{fixture_site_url}/search.html"}
     turns = [_turn(ToolCall("1", "done", {}))]
     seen = []
 

@@ -245,6 +245,39 @@ async def test_run_agent_stops_after_one_attempt_on_a_blocked_site(
 
 
 @pytest.mark.asyncio
+async def test_run_agent_marks_the_run_failed_when_the_start_url_is_unreachable(
+    db, make_user, redis, fixture_site_url,
+):
+    """A planner that guesses a domain which does not resolve used to crash
+    run_agent outright: page.goto raises out of RecordingSession.run(), the
+    worker's consume loop only logs it, and the row stays 'driving' forever
+    with the card spinning. The run must end terminal and say why.
+    """
+    user = await _funded_pro_user(db, make_user)
+    run = await agent_runs.create_run(user, "search a site that does not exist", db)
+    await db.commit()
+
+    plan = {**_fake_plan(fixture_site_url), "url": "https://nonexistent.invalid/"}
+
+    async def _confirm_repeatedly():
+        message = json.dumps({"t": "confirm_url", "ok": True})
+        for _ in range(30):
+            await redis.publish(cmd_channel(run.id), message)
+            await asyncio.sleep(0.3)
+
+    with patch("app.agent.runner.build_plan", AsyncMock(return_value=plan)):
+        confirm_task = asyncio.create_task(_confirm_repeatedly())
+        await run_agent(run.id)
+        confirm_task.cancel()
+
+    await db.refresh(run)
+    assert run.status == AgentRunStatus.FAILED
+    assert run.failure_reason
+    # The multi-line Playwright call log must not reach the failure card.
+    assert "\n" not in run.failure_reason
+
+
+@pytest.mark.asyncio
 async def test_set_status_never_resurrects_a_cancelled_run(db, make_user):
     """The cancel route marks the row terminal immediately, so the user sees
     the run stop at once. Whatever the worker writes before it reaches its next
