@@ -11,7 +11,7 @@ from app.agent.extract import ExtractionError, build_extraction
 from app.agent.planner import build_plan
 from app.agent.verify import VerifyResult, missing_field_names, verify_workflow
 from app.db import async_session
-from app.models.agent_run import AgentRun, AgentRunStatus
+from app.models.agent_run import AgentRun, AgentRunStatus, TERMINAL_STATUSES
 from app.models.user import User
 from app.models.workflow import Workflow, WorkflowStatus
 from app.recorder.session import RecordingSession
@@ -23,6 +23,10 @@ log = logging.getLogger("agent")
 MAX_ATTEMPTS = 3
 WALL_CLOCK_SECONDS = 600
 MAX_START_URL_CHARS = 2048
+# Outlives the longest possible run (WALL_CLOCK_SECONDS plus the confirmation
+# gate's timeout), so a stop request can never expire while the run it targets
+# is still going. The key is per-run-id, so a leftover flag is inert.
+CANCEL_TTL_SECONDS = 3600
 
 
 @dataclass(frozen=True)
@@ -134,6 +138,22 @@ def cmd_channel(run_id: uuid.UUID) -> str:
     return f"agent:cmd:{run_id}"
 
 
+def cancel_key(run_id: uuid.UUID) -> str:
+    return f"agent:cancel:{run_id}"
+
+
+async def cancel_requested(run_id: uuid.UUID) -> bool:
+    """Whether the user has asked to stop this run.
+
+    A flag rather than only a pub/sub command because the worker is not
+    listening on the command channel for most of a run — it is inside an LLM
+    turn or a browser action. The runner polls this at every point where it is
+    about to spend money or time, so a stop lands at the next checkpoint
+    instead of being missed entirely.
+    """
+    return bool(await redis_client.exists(cancel_key(run_id)))
+
+
 async def publish(run_id: uuid.UUID, event: dict) -> None:
     await redis_client.publish(evt_channel(run_id), json.dumps(event))
 
@@ -142,6 +162,12 @@ async def _set_status(run_id: uuid.UUID, status: AgentRunStatus, **extra) -> Non
     async with async_session() as db:
         run = await db.get(AgentRun, run_id)
         if run is None:
+            return
+        # The cancel route marks the row terminal immediately, so the user sees
+        # the run stop the moment they click. The worker keeps running until it
+        # reaches its next checkpoint — anything it writes in between must not
+        # resurrect the run as in-progress.
+        if run.status in TERMINAL_STATUSES:
             return
         run.status = status
         for key, value in extra.items():
@@ -161,11 +187,18 @@ async def await_url_confirmation(run_id: uuid.UUID, timeout_s: float = 300.0) ->
     await pubsub.subscribe(cmd_channel(run_id))
     deadline = time.monotonic() + timeout_s
     try:
+        # Checked after subscribing, for the stop that arrived in the window
+        # between the status going awaiting_confirm and this subscription
+        # existing — a publish into that gap reaches nobody.
+        if await cancel_requested(run_id):
+            return UrlDecision(confirmed=False)
         while time.monotonic() < deadline:
             message = await pubsub.get_message(ignore_subscribe_messages=True, timeout=5.0)
             if message is None or message["type"] != "message":
                 continue
             command = json.loads(message["data"])
+            if command.get("t") == "cancel":
+                return UrlDecision(confirmed=False)
             if command.get("t") == "confirm_url":
                 if not command.get("ok"):
                     return UrlDecision(confirmed=False)
@@ -205,11 +238,18 @@ async def _finish(run_id: uuid.UUID, *, succeeded: bool, reason: str | None, tok
     })
 
 
-async def _cancel(run_id: uuid.UUID) -> None:
+async def _cancel(run_id: uuid.UUID, tokens: int = 0) -> None:
+    """Terminates a stopped run. cancel_run is idempotent, so this is safe when
+    the cancel route already marked the row terminal — but the worker still
+    runs it, because a stop can also come from the confirmation gate timing
+    out, which no route ever sees."""
     async with async_session() as db:
         run = await db.get(AgentRun, run_id)
         if run is None:
             return
+        # Recorded even though the run is refunded: tokens were really spent,
+        # and the run row is where that is accounted for.
+        run.token_usage = tokens
         await agent_runs.cancel_run(run, db)
         await db.commit()
     await publish(run_id, {"t": "status", "state": "cancelled", "reason": None})
@@ -240,6 +280,9 @@ async def run_agent(agent_run_id: uuid.UUID) -> None:
 
     # --- Plan ---
     await _set_status(agent_run_id, AgentRunStatus.PLANNING)
+    if await cancel_requested(agent_run_id):
+        await _cancel(agent_run_id)
+        return
     try:
         plan = await build_plan(prompt)
     except Exception as exc:  # noqa: BLE001 - any planning failure (PlanError or LLM error) ends the run
@@ -292,6 +335,10 @@ async def run_agent(agent_run_id: uuid.UUID) -> None:
     hint = ""
 
     for attempt in range(1, MAX_ATTEMPTS + 1):
+        if await cancel_requested(agent_run_id):
+            await _cancel(agent_run_id, total_tokens)
+            return
+
         if time.monotonic() - started > WALL_CLOCK_SECONDS:
             await _finish(
                 agent_run_id, succeeded=False, reason="exceeded the time budget",
@@ -302,15 +349,30 @@ async def run_agent(agent_run_id: uuid.UUID) -> None:
         status = AgentRunStatus.DRIVING if attempt == 1 else AgentRunStatus.REPAIRING
         await _set_status(agent_run_id, status, attempt=attempt)
 
-        outcome: dict = {"marks": [], "tokens": 0, "gave_up_reason": None, "blocked": False}
+        outcome: dict = {
+            "marks": [], "tokens": 0, "gave_up_reason": None, "blocked": False,
+            "cancelled": False,
+        }
 
         async def _on_progress(name, arguments, text, _run_id=agent_run_id) -> None:
             await publish(_run_id, {"t": "step", "tool": name, "detail": text})
 
+        async def _should_stop(_run_id=agent_run_id) -> bool:
+            return await cancel_requested(_run_id)
+
         async def agent_driver(session, _hint=hint, _outcome=outcome) -> None:
-            result = await drive(session.page, plan, on_progress=_on_progress, hint=_hint)
+            result = await drive(
+                session.page, plan, on_progress=_on_progress, hint=_hint,
+                should_stop=_should_stop,
+            )
             _outcome["marks"] = result.marks
             _outcome["tokens"] = result.tokens
+            if result.cancelled:
+                # Returning ends the recording session and closes the browser;
+                # the runner terminates the run below. No extraction is built —
+                # a half-driven page has nothing worth marking.
+                _outcome["cancelled"] = True
+                return
             if result.gave_up:
                 _outcome["gave_up_reason"] = result.give_up_reason
                 _outcome["blocked"] = result.blocked
@@ -326,6 +388,10 @@ async def run_agent(agent_run_id: uuid.UUID) -> None:
         )
         await session.run()
         total_tokens += outcome["tokens"]
+
+        if outcome["cancelled"] or await cancel_requested(agent_run_id):
+            await _cancel(agent_run_id, total_tokens)
+            return
 
         if outcome["gave_up_reason"]:
             reason = outcome["gave_up_reason"]

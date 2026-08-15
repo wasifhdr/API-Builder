@@ -5,10 +5,10 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.agent.runner import cmd_channel, valid_start_url
+from app.agent.runner import CANCEL_TTL_SECONDS, cancel_key, cmd_channel, valid_start_url
 from app.core.deps import current_user
 from app.db import get_db
-from app.models.agent_run import AgentRun
+from app.models.agent_run import TERMINAL_STATUSES, AgentRun
 from app.models.user import User
 from app.redis import redis_client
 from app.schemas.agent import AgentRunCreate, AgentRunOut, ConfirmUrlIn
@@ -99,3 +99,31 @@ async def confirm_url(
         cmd_channel(run_id),
         json.dumps({"t": "confirm_url", "ok": body.ok, "url": url}),
     )
+
+
+@router.post("/runs/{run_id}/cancel", status_code=204)
+async def cancel_run(
+    run_id: uuid.UUID,
+    user: User = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    """Stops a run in progress, at any phase.
+
+    The row is marked cancelled and refunded here rather than being left for
+    the worker, so the user sees the run stop the instant they click instead of
+    waiting out an in-flight model turn. The worker unwinds cooperatively at
+    its next checkpoint; _set_status refuses to move a terminal run back into
+    an in-progress state in the meantime.
+    """
+    run = await _owned_run(run_id, user, db)
+    if run.status in TERMINAL_STATUSES:
+        raise HTTPException(status_code=409, detail="This run has already finished.")
+
+    await agent_runs.cancel_run(run, db)
+    await db.commit()
+
+    # Two signals, because the worker can be in either of two places: parked on
+    # the confirmation gate, where it is listening to the command channel, or
+    # mid-drive, where it only polls the flag between turns.
+    await redis_client.set(cancel_key(run_id), "1", ex=CANCEL_TTL_SECONDS)
+    await redis_client.publish(cmd_channel(run_id), json.dumps({"t": "cancel"}))

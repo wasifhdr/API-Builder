@@ -52,6 +52,10 @@ class DriveResult:
     # runner reads this to skip its repair attempts: no change of strategy
     # gets past a wall, so retrying only spends the user's money twice more.
     blocked: bool = False
+    # True when the user stopped the run mid-drive. Distinct from gave_up:
+    # there is no failure to repair or report, so the runner ends the run
+    # outright instead of feeding this into another attempt.
+    cancelled: bool = False
 
 
 _SHAPE_RULES = {
@@ -92,15 +96,26 @@ def _task_brief(plan: dict, hint: str = "") -> str:
 
 async def drive(
     page: Page, plan: dict, max_turns: int = 25, on_progress=None, hint: str = "",
+    should_stop=None,
 ) -> DriveResult:
     """Runs the agent's tool-calling loop against a live page.
 
     The page belongs to a live RecordingSession, so every action taken here is
     captured as a workflow step with ranked selectors by the injected recorder —
     this function never builds a selector itself.
+
+    `should_stop` is an async predicate polled once per turn, before the
+    (billable) model call. A turn is the finest granularity a stop can take
+    effect at without abandoning an in-flight browser action mid-way, and it is
+    the boundary that matters for cost: the user is never charged for a turn
+    requested after they hit stop.
     """
     result = DriveResult()
     marks: list[str] = result.marks
+
+    if should_stop is not None and await should_stop():
+        result.cancelled = True
+        return result
 
     # Pre-flight, before the first (billable) model call: a block page is still
     # a page, so without this the model would spend its whole turn budget
@@ -123,6 +138,10 @@ async def drive(
     ]
 
     for _ in range(max_turns):
+        if should_stop is not None and await should_stop():
+            result.cancelled = True
+            return result
+
         turn = await complete_tools(DRIVE_SYSTEM, messages, TOOL_SCHEMAS)
         result.turns += 1
         result.tokens += turn.usage_tokens

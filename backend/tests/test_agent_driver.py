@@ -37,6 +37,47 @@ async def test_drive_runs_tool_calls_until_done(fixture_site_url, fixture_page):
 
 
 @pytest.mark.asyncio
+async def test_drive_stops_before_spending_a_turn_when_cancelled(
+    fixture_site_url, fixture_page
+):
+    """The stop check sits before the model call, not after it: a user who
+    stops must not be billed for a turn requested after they clicked."""
+    plan = {**PLAN, "url": f"{fixture_site_url}/search.html"}
+
+    async def stopped() -> bool:
+        return True
+
+    never = AsyncMock(side_effect=AssertionError("the model was called after a stop"))
+    with patch("app.agent.driver.complete_tools", never):
+        result = await drive(fixture_page, plan, should_stop=stopped)
+
+    assert result.cancelled
+    assert not result.gave_up
+    assert result.turns == 0
+    assert result.tokens == 0
+
+
+@pytest.mark.asyncio
+async def test_drive_stops_mid_loop_when_cancelled(fixture_site_url, fixture_page):
+    """A stop arriving after the run is under way ends it at the next turn
+    boundary, leaving the turns already taken accounted for."""
+    plan = {**PLAN, "url": f"{fixture_site_url}/search.html"}
+    # Pre-flight, then turn one, then the stop lands before turn two.
+    stops = iter([False, False, True])
+
+    async def stopped() -> bool:
+        return next(stops, True)
+
+    turns = [_turn(ToolCall("1", "navigate", {"url": f"{fixture_site_url}/search.html?q=tv"}))]
+    with patch("app.agent.driver.complete_tools", AsyncMock(side_effect=turns)):
+        result = await drive(fixture_page, plan, should_stop=stopped)
+
+    assert result.cancelled
+    assert result.turns == 1
+    assert result.tokens == 10
+
+
+@pytest.mark.asyncio
 async def test_drive_records_give_up(fixture_site_url, fixture_page):
     plan = {**PLAN, "url": f"{fixture_site_url}/search.html"}
     turns = [_turn(ToolCall("1", "give_up", {"reason": "login wall"}))]

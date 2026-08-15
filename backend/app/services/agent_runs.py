@@ -87,10 +87,13 @@ async def finish_run(
 
 
 async def cancel_run(run: AgentRun, db: AsyncSession) -> None:
-    """The user stopped the run at the confirmation gate. Terminal and refunded,
-    but NOT a failure: nothing was attempted, so the UI must not offer the
-    'record it manually instead' recovery that a real failure warrants.
-    Does NOT commit."""
+    """The user stopped the run — at the confirmation gate or part-way through
+    the drive. Terminal and refunded, but NOT a failure: the agent did not fail
+    to build the API, so the UI must not present this with the failure card's
+    'couldn't finish this one' framing. Refunded in full even when tokens
+    were already spent: charging for work the user chose to abandon would make
+    stopping feel expensive, and stopping early is the behaviour we want.
+    Idempotent — a second call is a no-op. Does NOT commit."""
     if run.status in TERMINAL_STATUSES:
         return
     run.status = AgentRunStatus.CANCELLED

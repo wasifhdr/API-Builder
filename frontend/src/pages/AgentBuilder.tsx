@@ -113,10 +113,12 @@ function PromptForm() {
 /** Progress screen: connects to an existing run and renders it through to a
  * terminal state. */
 function RunProgress({ runId }: { runId: string }) {
-  const { run, activity, checks, connectionError, confirmUrl } = useAgentRun(runId)
+  const { run, activity, checks, connectionError, confirmUrl, cancelRun } = useAgentRun(runId)
   const [confirming, setConfirming] = useState(false)
   const [urlDraft, setUrlDraft] = useState<string | null>(null)
   const [urlError, setUrlError] = useState<string | null>(null)
+  const [stopping, setStopping] = useState(false)
+  const [stopError, setStopError] = useState<string | null>(null)
 
   if (!run) {
     return (
@@ -138,18 +140,53 @@ function RunProgress({ runId }: { runId: string }) {
     }
   }
 
+  async function handleStop() {
+    setStopping(true)
+    setStopError(null)
+    try {
+      await cancelRun()
+    } catch (err) {
+      setStopError(err instanceof Error ? err.message : 'Could not stop this run')
+    } finally {
+      setStopping(false)
+    }
+  }
+
+  const running = !TERMINAL_RUN_STATUSES.has(run.status)
+  // The confirmation card carries its own "Cancel run" button, so the header
+  // does not offer a second, differently-worded way to do the same thing.
+  const canStop = running && run.status !== 'awaiting_confirm'
+
   return (
     <div className="mx-auto max-w-2xl space-y-6">
       <div className={cardClasses({ variant: 'feature' })}>
         <div className="mb-3 flex items-center justify-between">
           <CapsLabel>Agent run</CapsLabel>
-          <Badge variant={STATUS_BADGE[run.status]} pulse={!TERMINAL_RUN_STATUSES.has(run.status)}>
+          <Badge variant={STATUS_BADGE[run.status]} pulse={running}>
             {STATUS_LABEL[run.status]}
           </Badge>
         </div>
         <p className="text-ink/80">&ldquo;{run.prompt}&rdquo;</p>
         {run.attempt > 1 && (
           <p className="mt-1 text-sm text-ink/50">Attempt {run.attempt}</p>
+        )}
+        {canStop && (
+          <div className="mt-4 border-t border-ink/10 pt-4">
+            <Button
+              variant="danger-ghost"
+              size="sm"
+              className="-ml-3"
+              disabled={stopping}
+              onClick={handleStop}
+            >
+              {stopping ? 'Stopping…' : 'Stop building'}
+            </Button>
+            <p className="mt-2 text-sm text-ink/50">
+              Ends the run and refunds the charge. The browser closes at the agent&apos;s next
+              step, so this can take a moment.
+            </p>
+            {stopError && <FieldError>{stopError}</FieldError>}
+          </div>
         )}
       </div>
 
@@ -247,11 +284,25 @@ function RunProgress({ runId }: { runId: string }) {
             Cancelled
           </CapsLabel>
           <p className="mb-4 text-ink/80">
-            You stopped this run before it started. You haven&apos;t been charged.
+            You stopped this run. You haven&apos;t been charged.
           </p>
-          <Link to="/build" className={buttonClasses('primary')}>
-            Start over
-          </Link>
+          <div className="flex flex-wrap gap-3">
+            <Link to="/build" className={buttonClasses('primary')}>
+              Start over
+            </Link>
+            {/* Only for a run stopped mid-drive (workflow_id is assigned right
+                after the URL is confirmed). A run stopped at the gate never
+                attempted anything, so offering a recovery would frame a
+                deliberate cancel as a failure. */}
+            {run.workflow_id && run.resolved_url && (
+              <Link
+                to={`/recorder?start_url=${encodeURIComponent(run.resolved_url)}`}
+                className={buttonClasses('default')}
+              >
+                Record it manually
+              </Link>
+            )}
+          </div>
         </div>
       )}
 

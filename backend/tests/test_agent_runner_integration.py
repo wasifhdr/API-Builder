@@ -16,7 +16,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 
 import app.agent.runner as runner_module
 import app.recorder.session as recorder_session
-from app.agent.runner import cmd_channel, run_agent
+from app.agent.runner import cancel_key, cmd_channel, run_agent
 from app.llm.client import ToolCall, TurnResult
 from app.models.agent_run import AgentRunStatus
 from app.models.billing import PlanTier, Subscription, SubscriptionStatus
@@ -242,3 +242,96 @@ async def test_run_agent_stops_after_one_attempt_on_a_blocked_site(
     assert "blocking automated visits" in run.failure_reason
     assert run.attempt == 1, "a blocked site must not be retried"
     assert run.token_usage == 0
+
+
+@pytest.mark.asyncio
+async def test_set_status_never_resurrects_a_cancelled_run(db, make_user):
+    """The cancel route marks the row terminal immediately, so the user sees
+    the run stop at once. Whatever the worker writes before it reaches its next
+    checkpoint must not put the run back into an in-progress state."""
+    user = await _funded_pro_user(db, make_user)
+    run = await agent_runs.create_run(user, "p", db)
+    await agent_runs.cancel_run(run, db)
+    await db.commit()
+
+    await runner_module._set_status(run.id, AgentRunStatus.VERIFYING, attempt=2)
+
+    await db.refresh(run)
+    assert run.status == AgentRunStatus.CANCELLED
+    assert run.attempt == 0
+
+
+@pytest.mark.asyncio
+async def test_run_agent_stops_mid_drive_when_the_user_cancels(
+    db, make_user, redis, fixture_site_url,
+):
+    """A stop landing after the run is under way ends it at the next turn
+    boundary — cancelled, not failed, and refunded even though tokens were
+    already spent."""
+    user = await _funded_pro_user(db, make_user)
+    run = await agent_runs.create_run(user, "search the fixture store for products", db)
+    await db.commit()
+
+    plan = _fake_plan(fixture_site_url)
+    turns = {"n": 0}
+
+    async def _stop_after_one_turn(system, messages, tools):
+        # Stands in for the user hitting "Stop building" while the agent is
+        # driving: the flag goes up between turns, exactly as the route sets it.
+        turns["n"] += 1
+        await redis.set(cancel_key(run.id), "1", ex=60)
+        return TurnResult([ToolCall("c1", "navigate", {"url": plan["url"]})], None, 5)
+
+    async def _confirm_repeatedly():
+        message = json.dumps({"t": "confirm_url", "ok": True})
+        for _ in range(30):
+            await redis.publish(cmd_channel(run.id), message)
+            await asyncio.sleep(0.3)
+
+    with patch("app.agent.runner.build_plan", AsyncMock(return_value=plan)), \
+         patch("app.agent.driver.complete_tools", _stop_after_one_turn):
+        confirm_task = asyncio.create_task(_confirm_repeatedly())
+        await run_agent(run.id)
+        confirm_task.cancel()
+
+    await db.refresh(run)
+    assert run.status == AgentRunStatus.CANCELLED
+    assert run.failure_reason is None
+    assert turns["n"] == 1, "the drive loop kept spending turns after the stop"
+    # Tokens really were spent, and the run row records that — but the user is
+    # made whole, so stopping early is never a costly choice.
+    assert run.token_usage == 5
+    balance, _ = await wallet.balances(user.id, db)
+    assert balance == Decimal("100.00")
+
+
+@pytest.mark.asyncio
+async def test_run_agent_cancels_at_the_confirmation_gate(
+    db, make_user, redis, fixture_site_url,
+):
+    """The gate is the one place the worker is listening rather than polling,
+    so the cancel command must unblock it — no browser is ever launched."""
+    user = await _funded_pro_user(db, make_user)
+    run = await agent_runs.create_run(user, "search the fixture store for products", db)
+    await db.commit()
+
+    plan = _fake_plan(fixture_site_url)
+    never = AsyncMock(side_effect=AssertionError("the model was called after a stop"))
+
+    async def _cancel_repeatedly():
+        message = json.dumps({"t": "cancel"})
+        for _ in range(30):
+            await redis.publish(cmd_channel(run.id), message)
+            await asyncio.sleep(0.3)
+
+    with patch("app.agent.runner.build_plan", AsyncMock(return_value=plan)), \
+         patch("app.agent.driver.complete_tools", never):
+        cancel_task = asyncio.create_task(_cancel_repeatedly())
+        await run_agent(run.id)
+        cancel_task.cancel()
+
+    await db.refresh(run)
+    assert run.status == AgentRunStatus.CANCELLED
+    assert run.workflow_id is None, "no workflow is created for a run stopped at the gate"
+    balance, _ = await wallet.balances(user.id, db)
+    assert balance == Decimal("100.00")

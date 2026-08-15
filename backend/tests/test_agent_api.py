@@ -8,7 +8,7 @@ import pytest
 from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
-from app.agent.runner import UrlDecision, cmd_channel, valid_start_url
+from app.agent.runner import UrlDecision, cancel_key, cmd_channel, valid_start_url
 from app.api import agent as agent_api
 from app.models.agent_run import AgentRun, AgentRunStatus
 from app.models.billing import PlanTier, Subscription, SubscriptionStatus
@@ -263,6 +263,95 @@ async def test_confirm_publishes_an_edited_url(db, make_user, redis):
 
     await pubsub.unsubscribe(cmd_channel(run.id))
     await pubsub.aclose()
+
+
+@pytest.mark.asyncio
+async def test_cancel_marks_the_run_cancelled_and_refunds(db, make_user, redis):
+    """The route terminates the row itself rather than leaving it to the
+    worker: a user who clicks stop mid-drive must not watch 'Driving the
+    browser' for another model turn before anything changes."""
+    user = await _funded_pro(db, make_user)
+    run = await agent_api.create_run(AgentRunCreate(prompt="p"), user=user, db=db)
+    charged, _ = await wallet.balances(user.id, db)
+
+    await agent_api.cancel_run(run.id, user=user, db=db)
+
+    await db.refresh(run)
+    assert run.status == AgentRunStatus.CANCELLED
+    refunded, _ = await wallet.balances(user.id, db)
+    assert refunded > charged
+
+
+@pytest.mark.asyncio
+async def test_cancel_sets_the_flag_the_drive_loop_polls(db, make_user, redis):
+    user = await _funded_pro(db, make_user)
+    run = AgentRun(user_id=user.id, prompt="p", status=AgentRunStatus.DRIVING)
+    db.add(run)
+    await db.commit()
+    await db.refresh(run)
+
+    await agent_api.cancel_run(run.id, user=user, db=db)
+
+    assert await redis.get(cancel_key(run.id)) == "1"
+
+
+@pytest.mark.asyncio
+async def test_cancel_publishes_to_the_command_channel(db, make_user, redis):
+    """The flag alone would not reach a run parked on the confirmation gate —
+    that one is blocked on pub/sub and polls nothing."""
+    user = await _funded_pro(db, make_user)
+    run = AgentRun(user_id=user.id, prompt="p", status=AgentRunStatus.AWAITING_CONFIRM)
+    db.add(run)
+    await db.commit()
+    await db.refresh(run)
+
+    pubsub = redis.pubsub()
+    await pubsub.subscribe(cmd_channel(run.id))
+    await asyncio.sleep(0.1)
+
+    await agent_api.cancel_run(run.id, user=user, db=db)
+
+    for _ in range(20):
+        message = await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
+        if message and message["type"] == "message":
+            assert json.loads(message["data"]) == {"t": "cancel"}
+            break
+    else:
+        pytest.fail("no cancel command was published")
+
+    await pubsub.aclose()
+
+
+@pytest.mark.asyncio
+async def test_cancelling_a_finished_run_is_409(db, make_user, redis):
+    """Not a silent no-op: a succeeded run's workflow already exists, and the
+    UI would otherwise show a cancelled badge over a perfectly good API."""
+    user = await _funded_pro(db, make_user)
+    run = AgentRun(user_id=user.id, prompt="p", status=AgentRunStatus.SUCCEEDED)
+    db.add(run)
+    await db.commit()
+    await db.refresh(run)
+
+    with pytest.raises(HTTPException) as exc:
+        await agent_api.cancel_run(run.id, user=user, db=db)
+    assert exc.value.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_cancel_on_someone_elses_run_is_404(db, make_user, redis):
+    owner = await make_user()
+    stranger = await make_user()
+    run = AgentRun(user_id=owner.id, prompt="p", status=AgentRunStatus.DRIVING)
+    db.add(run)
+    await db.commit()
+    await db.refresh(run)
+
+    with pytest.raises(HTTPException) as exc:
+        await agent_api.cancel_run(run.id, user=stranger, db=db)
+    assert exc.value.status_code == 404
+
+    await db.refresh(run)
+    assert run.status == AgentRunStatus.DRIVING
 
 
 @pytest.mark.asyncio

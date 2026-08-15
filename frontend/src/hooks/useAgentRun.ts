@@ -87,11 +87,21 @@ export function useAgentRun(runId: string | null) {
     [runId],
   )
 
+  /** Stops a run in progress. The server marks the row cancelled straight
+   * away, so refreshing here shows the new state without waiting for the
+   * worker to notice and push a status event. */
+  const cancelRun = useCallback(async () => {
+    if (!runId) return
+    await api.post(`/agent/runs/${runId}/cancel`, {})
+    await refresh()
+  }, [runId, refresh])
+
   return {
     run: state.run,
     activity: state.activity,
     checks: state.checks,
     connectionError: state.connectionError,
     confirmUrl,
+    cancelRun,
   }
 }
