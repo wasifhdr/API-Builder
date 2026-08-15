@@ -18,7 +18,7 @@ import type { CustomApi, WorkflowSummary } from '../lib/types'
 const WORKFLOW_STATUS_LABEL: Record<WorkflowSummary['status'], string> = {
   recording: 'Recording…',
   draft: 'Draft',
-  ready: 'Ready to publish',
+  ready: 'Ready',
   archived: 'Archived',
 }
 
