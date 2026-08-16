@@ -18,6 +18,27 @@ log = logging.getLogger("agent")
 # tests/test_agent_recorder_capture.py.
 POST_ACTION_SETTLE_MS = 1200
 
+# Additional grace for the page to render what the action asked for. The settle
+# above is sized for OUR fill debounce, not for a storefront's search returning
+# results over the network. Capped, because a page with analytics beacons or an
+# open websocket never goes idle and the turn must not stall on it.
+NETWORK_IDLE_TIMEOUT_MS = 6000
+
+
+async def settle(page: Page) -> None:
+    """Waits for the page to stop changing before it is observed.
+
+    Network-idle is the signal that a search's results actually arrived. The
+    fixed settle stays as the floor (it is what keeps recorded step ORDER
+    correct), and the idle wait is best-effort on top — timing out is normal
+    and must not fail the tool call.
+    """
+    await page.wait_for_timeout(POST_ACTION_SETTLE_MS)
+    try:
+        await page.wait_for_load_state("networkidle", timeout=NETWORK_IDLE_TIMEOUT_MS)
+    except Exception:  # noqa: BLE001 - a chatty page never idles; observe anyway
+        pass
+
 
 def _fn(name: str, description: str, properties: dict, required: list[str]) -> dict:
     return {
@@ -182,6 +203,6 @@ async def dispatch(
         log.info("agent tool %s failed: %s", name, exc)
         return ToolOutcome(text=f"{name} failed: {exc}")
 
-    await page.wait_for_timeout(POST_ACTION_SETTLE_MS)
+    await settle(page)
     observation = await observe(page)
     return ToolOutcome(text=f"{name} ok", observation=observation)
