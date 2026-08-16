@@ -11,9 +11,26 @@ from app.models.workflow import Workflow
 from app.redis import redis_client
 
 
+# custom_apis.slug is varchar(80) and _unique_slug appends "-" + 4 hex chars.
+# Workflow names are varchar(200) — the agent planner routinely writes
+# sentence-long ones — so the base has to be clamped or the INSERT overflows
+# the column and publishing 500s.
+SLUG_MAX_LENGTH = 80
+_SLUG_SUFFIX_LENGTH = 5
+SLUG_BASE_MAX_LENGTH = SLUG_MAX_LENGTH - _SLUG_SUFFIX_LENGTH
+
+
 def _slugify(name: str) -> str:
     normalized = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode("ascii")
     slug = re.sub(r"[^a-z0-9]+", "-", normalized.lower()).strip("-")
+    if len(slug) > SLUG_BASE_MAX_LENGTH:
+        slug = slug[:SLUG_BASE_MAX_LENGTH]
+        # Prefer cutting at the last word boundary so the slug stays readable,
+        # unless that would leave almost nothing.
+        boundary = slug.rfind("-")
+        if boundary >= SLUG_BASE_MAX_LENGTH // 2:
+            slug = slug[:boundary]
+        slug = slug.strip("-")
     return slug or "api"
 
 

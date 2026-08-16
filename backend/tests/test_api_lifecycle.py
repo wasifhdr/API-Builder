@@ -57,6 +57,22 @@ async def test_build_snapshot_copies_workflow_fields(db, make_user):
     assert "browser_settings" in snapshot
 
 
+async def test_publish_fits_slug_column_for_long_workflow_names(db, make_user, redis, monkeypatch):
+    # Workflow names are varchar(200) and the agent's planner writes sentence-long
+    # ones; custom_apis.slug is varchar(80), so an unbounded slug overflows the
+    # column and the publish endpoint 500s on a DataError.
+    monkeypatch.setattr(publish_module, "redis_client", redis)
+    owner = await make_user()
+    workflow = await _make_workflow(db, owner)
+    workflow.name = "Search products on the official Walton BD website and retrieve product details."
+    await db.commit()
+
+    api = await publish_module.publish_workflow(workflow, db)
+
+    assert len(api.slug) <= 80
+    assert api.slug.startswith("search-products-on-the-official-walton")
+
+
 async def test_sync_workflow_to_api_updates_snapshot_and_marks_spec_pending(db, make_user, redis, monkeypatch):
     monkeypatch.setattr(publish_module, "redis_client", redis)
     owner = await make_user()
