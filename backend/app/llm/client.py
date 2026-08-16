@@ -1,10 +1,77 @@
+import asyncio
+import contextvars
 import json
+import logging
 import re
 from dataclasses import dataclass
 
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, RateLimitError
 
 from app.config import settings
+
+log = logging.getLogger("llm")
+
+# A 429 here is a per-MINUTE quota window, so waiting a full minute is what
+# actually clears it — the retryDelay the API reports is often a fraction of a
+# second and retrying on that alone just burns another attempt against the same
+# exhausted window. One authoring run makes a call per drive turn plus one per
+# field compiled, so bursts cross the ceiling routinely. Measured: a single 429
+# killed an entire waltonbd run — the drive loop's exception escaped, the
+# session ended with no marks, and it surfaced as "the agent never marked any
+# data to extract", a marking failure that was never about marking.
+RATE_LIMIT_RETRIES = 3
+RATE_LIMIT_SLEEP_S = 60.0
+
+# Set by app.agent.runner for the duration of a run, so a minute spent waiting
+# out a quota window can be shown in the UI instead of looking like a hang.
+# A ContextVar rather than a parameter: this client has no idea which run it is
+# serving, threading a run id through every call site would push transport
+# concerns into all of them, and a context is copied into the tasks the
+# recording session spawns — exactly the scope that needs it.
+rate_limit_listener: contextvars.ContextVar = contextvars.ContextVar(
+    "rate_limit_listener", default=None,
+)
+
+
+async def _notify_rate_limit(waiting: bool) -> None:
+    listener = rate_limit_listener.get()
+    if listener is None:
+        return
+    try:
+        await listener(waiting)
+    except Exception:  # noqa: BLE001 - telling the UI must never fail the call
+        log.exception("rate limit listener failed")
+
+
+async def _create(**kwargs):
+    """chat.completions.create, waiting out a rate-limit window on 429.
+
+    Only rate limits are retried: every other error is a real failure the
+    caller must see rather than pay for twice more. Note the cost — up to
+    RATE_LIMIT_RETRIES - 1 minutes per call — which is charged against
+    app.agent.runner's WALL_CLOCK_SECONDS.
+    """
+    notified = False
+    for attempt in range(RATE_LIMIT_RETRIES):
+        try:
+            resp = await client.chat.completions.create(**kwargs)
+        except RateLimitError:
+            if attempt == RATE_LIMIT_RETRIES - 1:
+                if notified:
+                    await _notify_rate_limit(False)
+                raise
+            log.warning(
+                "rate limited, waiting %.0fs for the quota window (attempt %s/%s)",
+                RATE_LIMIT_SLEEP_S, attempt + 1, RATE_LIMIT_RETRIES,
+            )
+            if not notified:
+                notified = True
+                await _notify_rate_limit(True)
+            await asyncio.sleep(RATE_LIMIT_SLEEP_S)
+        else:
+            if notified:
+                await _notify_rate_limit(False)
+            return resp
 
 # Strips a reasoning block a thinking-capable model may emit even when not asked
 # to. Covers <think>, <thought>, <thinking> — Google-served Gemma wraps its
@@ -113,7 +180,7 @@ async def complete_json(
     else:
         user_content = user
 
-    resp = await client.chat.completions.create(
+    resp = await _create(
         model=MODEL_NAME,
         messages=[
             {"role": "system", "content": system},
@@ -204,7 +271,7 @@ async def complete_tools(
         kwargs["tools"] = tools
         kwargs["tool_choice"] = "auto"
 
-    resp = await client.chat.completions.create(**kwargs)
+    resp = await _create(**kwargs)
 
     if not resp.choices:
         extra = resp.model_dump()

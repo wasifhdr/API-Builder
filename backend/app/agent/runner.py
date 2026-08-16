@@ -11,6 +11,7 @@ from app.agent.extract import ExtractionError, build_extraction
 from app.agent.planner import build_plan
 from app.agent.verify import VerifyResult, missing_field_names, verify_workflow
 from app.db import async_session
+from app.llm import client as llm_client
 from app.models.agent_run import AgentRun, AgentRunStatus, TERMINAL_STATUSES
 from app.models.user import User
 from app.models.workflow import Workflow, WorkflowStatus
@@ -307,6 +308,15 @@ async def _run_agent(agent_run_id: uuid.UUID) -> None:
     if user is None:
         await _finish(agent_run_id, succeeded=False, reason="user not found", tokens=0)
         return
+
+    # Registered before the first model call so every phase — planning, drive
+    # turns, selector compilation, verify — reports a quota wait. Set here
+    # rather than passed down: the context is copied into the tasks the
+    # recording session spawns, so the drive loop inherits it for free.
+    async def _on_rate_limit(waiting: bool, _run_id=agent_run_id) -> None:
+        await publish(_run_id, {"t": "rate_limit", "waiting": waiting})
+
+    llm_client.rate_limit_listener.set(_on_rate_limit)
 
     # --- Plan ---
     await _set_status(agent_run_id, AgentRunStatus.PLANNING)
