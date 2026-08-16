@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<!--
+  Trimmed copy of the Alibaba "baxia" punish page daraz.com.bd serves to a
+  headless browser (captured 2026-08-16 from
+  https://www.daraz.com.bd///_____tmd_____/punish?x5secdata=...). Kept
+  structurally faithful — the title and #baxia-punish are exactly what
+  app.recorder.blocked keys off.
+
+  On the live wall the widget is injected by nc.js at runtime; the static
+  document only references it from script. It is inlined here so the detector
+  meets the same *rendered* DOM it meets in the browser.
+-->
+<html data-dpr="1">
+<head>
+  <meta charset="utf-8">
+  <title>CAPTCHA Verification</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="aplus-xplug" content="NONE">
+</head>
+<body>
+  <div id="baxia-punish">
+    <div id="nocaptcha" class="nc-container">
+      <div id="nc_1_wrapper" class="nc_wrapper">
+        <div id="nc_1_n1z" class="nc_iconfont btn_slide"></div>
+        <span class="nc-lang-cnt">Slide right to complete the puzzle</span>
+      </div>
+    </div>
+    <form id="baxia-punish-form" action="/_____tmd_____/verify" method="post"></form>
+  </div>
+</body>
+</html>

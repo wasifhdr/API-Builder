@@ -75,6 +75,9 @@ class RecordingSession:
         # True while a compile is in flight — the recorder window is locked.
         self.busy = False
         self.page: Page | None = None
+        # Resolved at launch from the browser we actually open; also handed to
+        # stealth.apply_client_hints so the hints agree with it.
+        self._user_agent: str | None = None
         self.use_saved_logins = False
         self.captured_storage_state: dict | None = None
         self.final_sample: object | None = None
@@ -129,42 +132,76 @@ class RecordingSession:
             # that could carry them.
             self.use_saved_logins = False
         channel = "chrome" if user.settings.get("recorder_channel") == "chrome" else None
-        profile_dir, is_temp = get_profile_dir(self.user_id, self.use_saved_logins)
+
+        # A headless session (autonomous authoring) opens a PLAIN context; only
+        # a headful one — or one carrying saved logins — opens a persistent
+        # profile. Measured against daraz.com.bd's x5sec wall (2026-08-16): a
+        # headless *persistent* context is redirected to the punish page on the
+        # very first navigation (6/6, across four launch configurations), while
+        # the plain context replay already uses loads the site and completes a
+        # search (3/3). The two present byte-identical JS fingerprints and
+        # request headers, so the wall is scoring the context type itself.
+        #
+        # Nothing is given up: the agent forces use_saved_logins off above, so
+        # the persistent profile it would otherwise open is a throwaway temp
+        # dir with no cookies, history or reputation in it. A headless session
+        # *with* saved logins still takes the persistent path — that warm
+        # profile is the entire point of the setting.
+        use_persistent = not self.headless or self.use_saved_logins
+        profile_dir, is_temp = (
+            get_profile_dir(self.user_id, self.use_saved_logins)
+            if use_persistent
+            else (None, False)
+        )
 
         await self._publish({"t": "status", "state": "launching"})
 
         try:
             async with async_playwright() as pw:
-                # no_viewport: otherwise Playwright emulates a fixed 1280×720
-                # viewport — the page clips in small windows, ignores resizes,
-                # and --start-maximized never takes effect.
+                # Without this the headless binary announces
+                # "HeadlessChrome/<version>", which some edges (Cloudflare
+                # on waltonbd.com, measured) refuse with a flat 403 before
+                # any page JS runs. Headful is unaffected — which is why a
+                # human could record a site the agent could not author.
+                self._user_agent = await useragent.resolve_user_agent(pw, channel)
                 # Stealth args matter at RECORD time too: without them Chromium
                 # sets navigator.webdriver, and aggressive detectors (IMDb and
                 # other Amazon properties, Cloudflare) challenge the recording
                 # window itself — blocking the user before a workflow can even
                 # be captured. Same layer replay uses, so record and replay
                 # present a consistent fingerprint.
-                launch_kwargs: dict = {
-                    "headless": self.headless,
-                    "args": [
-                        *([] if self.headless else ["--start-maximized"]),
-                        *stealth.launch_args(headless=self.headless),
-                    ],
-                    "no_viewport": True,
-                    # Without this the headless binary announces
-                    # "HeadlessChrome/<version>", which some edges (Cloudflare
-                    # on waltonbd.com, measured) refuse with a flat 403 before
-                    # any page JS runs. Headful is unaffected — which is why a
-                    # human could record a site the agent could not author.
-                    "user_agent": await useragent.resolve_user_agent(pw, channel),
-                }
-                if channel:
-                    launch_kwargs["channel"] = channel
-                context = await pw.chromium.launch_persistent_context(str(profile_dir), **launch_kwargs)
+                args = [
+                    *([] if self.headless else ["--start-maximized"]),
+                    *stealth.launch_args(headless=self.headless),
+                ]
+                browser = None
+                if use_persistent:
+                    # no_viewport: otherwise Playwright emulates a fixed
+                    # 1280×720 viewport — the page clips in small windows,
+                    # ignores resizes, and --start-maximized never takes effect.
+                    launch_kwargs: dict = {
+                        "headless": self.headless,
+                        "args": args,
+                        "no_viewport": True,
+                        "user_agent": self._user_agent,
+                    }
+                    if channel:
+                        launch_kwargs["channel"] = channel
+                    context = await pw.chromium.launch_persistent_context(
+                        str(profile_dir), **launch_kwargs)
+                else:
+                    browser_kwargs: dict = {"headless": self.headless, "args": args}
+                    if channel:
+                        browser_kwargs["channel"] = channel
+                    browser = await pw.chromium.launch(**browser_kwargs)
+                    context = await browser.new_context(
+                        user_agent=self._user_agent, no_viewport=True)
                 try:
                     await self._run_in_context(context, workflow.start_url)
                 finally:
                     await context.close()
+                    if browser is not None:
+                        await browser.close()
             # Announce the clean end (publishes "closed") while the heartbeat
             # alive_key is still present, so the WS bridge learns the session
             # ended normally BEFORE the key disappears. Deleting the key first
@@ -176,13 +213,20 @@ class RecordingSession:
             # still surfaces as "died", which is correct.
             await self._finalize()
         finally:
-            if is_temp:
+            if is_temp and profile_dir is not None:
                 shutil.rmtree(profile_dir, ignore_errors=True)
             await self.redis.delete(self.alive_key)
 
     async def _run_in_context(self, context: BrowserContext, start_url: str) -> None:
         page = context.pages[0] if context.pages else await context.new_page()
         self.page = page
+
+        # Before the first navigation: `user_agent` above rewrites the UA but
+        # leaves Sec-CH-UA / navigator.userAgentData announcing HeadlessChrome,
+        # so the browser contradicts itself in the next header. Headless only —
+        # a headful browser's hints are already truthful.
+        if self.headless and self._user_agent:
+            await stealth.apply_client_hints(context, page, self._user_agent)
 
         # End the session the moment the browser goes away — the user closed
         # the Chromium window, or it crashed. Without this the session lingers

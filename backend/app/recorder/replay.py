@@ -64,11 +64,12 @@ async def _open_context(
     viewport: dict,
     storage_state: dict | None,
     profile_dir,
-) -> tuple[Any, BrowserContext]:
-    """Open the replay browser context. Returns (browser, context); `browser` is
-    None for the persistent-profile path (launch_persistent_context yields the
-    context directly). Both paths carry the stealth launch args and a
-    human-looking UA/locale/timezone; the caller injects STEALTH_INIT_JS."""
+) -> tuple[Any, BrowserContext, str]:
+    """Open the replay browser context. Returns (browser, context, user_agent);
+    `browser` is None for the persistent-profile path (launch_persistent_context
+    yields the context directly). Both paths carry the stealth launch args and a
+    human-looking UA/locale/timezone; the caller injects STEALTH_INIT_JS and
+    aligns the client hints with the returned UA."""
     args = stealth.launch_args(headless)
     # Derived from the launched binary rather than pinned: the UA this used to
     # hard-code (Chrome/126) was several major versions behind the browser
@@ -94,7 +95,7 @@ async def _open_context(
                 await context.add_cookies(cookies)
             except Exception as exc:
                 log.warning("failed to overlay auth cookies on profile: %s", exc)
-        return None, context
+        return None, context, user_agent
 
     browser = await pw.chromium.launch(headless=headless, slow_mo=settings.replay_slow_mo_ms, args=args)
     context_kwargs: dict = {
@@ -106,7 +107,7 @@ async def _open_context(
     if storage_state is not None:
         context_kwargs["storage_state"] = storage_state
     context = await browser.new_context(**context_kwargs)
-    return browser, context
+    return browser, context, user_agent
 
 
 def _replay_viewport(workflow_snapshot: dict) -> dict:
@@ -408,7 +409,7 @@ async def replay_workflow(
     lock = _profile_lock(user_id) if (profile_dir is not None and user_id is not None) else contextlib.nullcontext()
 
     async with lock, async_playwright() as pw:
-        browser, context = await _open_context(
+        browser, context, user_agent = await _open_context(
             pw,
             headless=launch_headless,
             viewport=_replay_viewport(workflow_snapshot),
@@ -421,6 +422,11 @@ async def replay_workflow(
         # bot-detection challenges. Applies to both launch paths.
         await context.add_init_script(stealth.STEALTH_INIT_JS)
         page = context.pages[0] if context.pages else await context.new_page()
+        # The UA above is only half the disguise: Sec-CH-UA and
+        # navigator.userAgentData still announce HeadlessChrome unless they are
+        # overridden too. Headless only — a headful replay is truthful already.
+        if launch_headless:
+            await stealth.apply_client_hints(context, page, user_agent)
 
         # Track main-frame navigations so we can dwell POST_NAV_WAIT_MS after
         # every page load — the initial goto and any load a click/press kicks

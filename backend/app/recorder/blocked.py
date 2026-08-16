@@ -25,11 +25,31 @@ _BLOCK_SELECTORS = ("#cf-error-details", "#cf-wrapper")
 
 # Interactive challenge widgets — the visitor is being asked to prove they are
 # human, rather than being refused.
+#
+# `#baxia-punish` is Alibaba's (Daraz, Lazada, AliExpress); it wraps the nc
+# slider CAPTCHA. Taken from the live daraz.com.bd wall, where nc.js injects it
+# at runtime — the static document only references it from script, so this
+# matches the rendered DOM, not the served HTML.
 _CHALLENGE_SELECTORS = (
     "#challenge-form",
     "#cf-chl-widget",
     "#challenge-running",
     "#turnstile-wrapper",
+    "#baxia-punish",
+)
+
+# Alibaba's wall announces itself in the URL rather than in the response: it
+# redirects to a punish page served with HTTP 200 and no distinguishing
+# headers, so neither the status nor `server` gives it away. Matched on the URL
+# because that survives a page whose JS has not run yet.
+#
+# Measured on daraz.com.bd (2026-08-16): a headless *persistent* context is
+# punished on the very first navigation, while a headful one — and the plain
+# context replay uses — is let through. That asymmetry is why an agent run
+# could not author a site a human could record by hand.
+_PUNISH_URL_MARKERS = (
+    "/_____tmd_____/punish",
+    "x5secdata=",
 )
 
 _BLOCK_TITLES = (
@@ -102,9 +122,26 @@ def from_response(response) -> Block | None:
     return Block("blocked", detail)
 
 
+def from_url(url: str | None) -> Block | None:
+    """Reads the address bar. The only signal Alibaba's wall gives us that does
+    not depend on the page's own JS having run."""
+    if not url:
+        return None
+    if any(marker in url for marker in _PUNISH_URL_MARKERS):
+        return Block("challenge", "an Alibaba anti-bot page (x5sec punish)")
+    return None
+
+
 async def from_page(page) -> Block | None:
     """Reads the rendered page. Catches the case where the wall is served with
     HTTP 200, and works where no response object is available."""
+    try:
+        wall = from_url(page.url)
+    except Exception:
+        wall = None
+    if wall is not None:
+        return wall
+
     try:
         probe = await page.evaluate(_PROBE_JS)
     except Exception:

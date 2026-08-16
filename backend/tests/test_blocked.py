@@ -54,6 +54,38 @@ def test_block_and_challenge_messages_differ():
     assert "clear the challenge" in challenge.message()
 
 
+def test_the_alibaba_punish_url_is_a_challenge():
+    # Daraz (and every other Alibaba property) redirects here instead of
+    # answering with a block status, so nothing in the response says "wall".
+    wall = blocked.from_url(
+        "https://www.daraz.com.bd///_____tmd_____/punish?x5secdata=xfOPp6Eoq-_8URjUB20Ha"
+    )
+    assert wall is not None
+    assert wall.is_challenge
+    assert "x5sec" in wall.detail
+
+
+def test_the_x5secdata_marker_alone_is_a_challenge():
+    # Seen on other Alibaba properties without the /_____tmd_____/ path.
+    assert blocked.from_url("https://example.com/verify?x5secdata=abc") is not None
+
+
+def test_ordinary_daraz_urls_are_not_challenges():
+    assert blocked.from_url("https://www.daraz.com.bd/") is None
+    assert blocked.from_url("https://www.daraz.com.bd/catalog/?q=laptop") is None
+    assert blocked.from_url(None) is None
+
+
+@pytest.mark.asyncio
+async def test_detects_the_rendered_punish_page(fixture_site_url, fixture_page):
+    # Served from the fixture site, so the URL marker cannot fire — this
+    # exercises the DOM signature on its own.
+    await fixture_page.goto(f"{fixture_site_url}/x5sec-punish.html")
+    wall = await blocked.from_page(fixture_page)
+    assert wall is not None
+    assert wall.is_challenge
+
+
 @pytest.mark.asyncio
 async def test_detects_the_real_block_page(fixture_site_url, fixture_page):
     await fixture_page.goto(f"{fixture_site_url}/cf-blocked.html")

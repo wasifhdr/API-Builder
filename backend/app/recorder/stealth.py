@@ -12,6 +12,10 @@ is never *raised*. They do NOT solve or bypass a CAPTCHA that is already shown �
 if a site still challenges a warmed, authenticated session, that workflow simply
 isn't a good fit for unattended replay.
 """
+import logging
+import re
+
+log = logging.getLogger("recorder")
 
 # Launch switches that either remove an automation tell or steady the
 # fingerprint. `--disable-blink-features=AutomationControlled` is the important
@@ -116,3 +120,95 @@ def launch_args(headless: bool) -> list[str]:
     if headless:
         args.append("--disable-gpu")
     return args
+
+
+# --- User-Agent Client Hints -------------------------------------------------
+#
+# Playwright's `user_agent` option rewrites the UA header and
+# `navigator.userAgent` and stops there. The *client hints* the same browser
+# sends alongside them — `Sec-CH-UA` on the wire, `navigator.userAgentData` in
+# JS — still carry the browser's own brand list, which under headless Chromium
+# reads `"HeadlessChrome";v="149"`. So a context that has gone to the trouble of
+# announcing a human UA contradicts itself in the very next header.
+#
+# Measured against daraz.com.bd (Alibaba's x5sec/baxia wall) on 2026-08-16:
+# correcting the hints is what let a headless persistent context load the site
+# and complete a search (2/2) where it was otherwise redirected to the punish
+# page on the first navigation (blocked 6/6). See app.recorder.blocked.
+#
+# Only applied where the browser would otherwise lie: a headful browser's own
+# hints are already truthful, and replacing truth with a fabrication is the
+# mistake the WebGL substitution above documents.
+
+_UA_MAJOR_RE = re.compile(r"Chrome/(\d+)")
+
+# The GREASE entry real Chrome mixes into its brand list; the exact string is
+# deliberately meaningless and varies between builds, so any plausible one does.
+_GREASE_BRAND = {"brand": "Not=A?Brand", "version": "24"}
+
+_PLATFORMS = (
+    ("Windows NT", "Windows", "15.0.0"),
+    ("Macintosh", "macOS", "15.0.0"),
+    ("X11; Linux", "Linux", ""),
+)
+
+# Chrome sends its major version here and only reports the full build number to
+# a site that explicitly asks for high-entropy hints. Matching the reduced UA
+# keeps the two consistent (see app.recorder.useragent for why the UA is
+# reduced in the first place).
+_FALLBACK_MAJOR = "151"
+
+
+def client_hint_metadata(user_agent: str) -> dict:
+    """The `userAgentMetadata` that agrees with `user_agent`.
+
+    Pure, so the agreement is testable without launching a browser.
+    """
+    match = _UA_MAJOR_RE.search(user_agent)
+    major = match.group(1) if match else _FALLBACK_MAJOR
+
+    platform, platform_version = "Windows", "15.0.0"
+    for token, name, version in _PLATFORMS:
+        if token in user_agent:
+            platform, platform_version = name, version
+            break
+
+    return {
+        "brands": [
+            _GREASE_BRAND,
+            {"brand": "Chromium", "version": major},
+            {"brand": "Google Chrome", "version": major},
+        ],
+        "fullVersion": f"{major}.0.0.0",
+        "platform": platform,
+        "platformVersion": platform_version,
+        "architecture": "x86",
+        "model": "",
+        "mobile": False,
+    }
+
+
+async def apply_client_hints(context, page, user_agent: str) -> None:
+    """Points `page`'s client hints at the same browser `user_agent` claims.
+
+    Applied per page and before the first navigation, rather than through a
+    `context.on("page")` hook: the hook's handler is a task, which races the
+    caller's own `goto` — and a hint that lands after the first request is
+    exactly the one that mattered.
+
+    Never raises. Being unable to set the hints is not a reason to fail a
+    recording (same rule app.recorder.useragent applies to a failed UA probe);
+    it degrades to the pre-existing behaviour of announcing them unchanged.
+    """
+    try:
+        cdp = await context.new_cdp_session(page)
+        await cdp.send("Emulation.setUserAgentOverride", {
+            "userAgent": user_agent,
+            # Chrome appends the q-values itself — passing them here yields a
+            # malformed "en-US,en;q=0.9;q=0.9".
+            "acceptLanguage": "en-US,en",
+            "platform": "Win32" if "Windows NT" in user_agent else "",
+            "userAgentMetadata": client_hint_metadata(user_agent),
+        })
+    except Exception as exc:  # noqa: BLE001 - hints are a hardening measure, not a precondition
+        log.warning("could not align client hints with the user agent (%s)", exc)
