@@ -8,6 +8,10 @@ interface AgentRunState {
   activity: AgentActivityEntry[]
   checks: AgentVerifyCheck[]
   connectionError: string | null
+  /** The worker is sat waiting out an LLM quota window. Not a run status —
+   * nothing about the row changes — but a minute of silence otherwise reads
+   * as a hang, so the status chip says what is really happening. */
+  rateLimited: boolean
 }
 
 const RECONNECT_DELAY_MS = 2000
@@ -25,6 +29,7 @@ export function useAgentRun(runId: string | null) {
     activity: [],
     checks: [],
     connectionError: null,
+    rateLimited: false,
   })
   const wsRef = useRef<WebSocket | null>(null)
   const reconnectTimer = useRef<number | null>(null)
@@ -49,6 +54,12 @@ export function useAgentRun(runId: string | null) {
 
     ws.onmessage = (event) => {
       const msg = JSON.parse(event.data)
+      if (msg.t === 'rate_limit') {
+        // Transient, and the row is untouched — refetching would just be a
+        // request against a run that has not changed.
+        setState((s) => ({ ...s, rateLimited: Boolean(msg.waiting) }))
+        return
+      }
       if (msg.t === 'step') {
         setState((s) => ({ ...s, activity: [...s.activity, { tool: msg.tool, detail: msg.detail }] }))
       } else if (msg.t === 'verify') {
@@ -60,7 +71,11 @@ export function useAgentRun(runId: string | null) {
     }
 
     ws.onclose = () => {
-      if (terminal.current) return
+      // Only the socket we currently hold may re-arm the reconnect. A socket
+      // that has already been superseded (the effect re-ran and replaced it)
+      // would otherwise schedule a second connection alongside the live one,
+      // and every event would be delivered — and appended — twice.
+      if (terminal.current || wsRef.current !== ws) return
       reconnectTimer.current = window.setTimeout(connect, RECONNECT_DELAY_MS)
     }
 
@@ -101,6 +116,7 @@ export function useAgentRun(runId: string | null) {
     activity: state.activity,
     checks: state.checks,
     connectionError: state.connectionError,
+    rateLimited: state.rateLimited,
     confirmUrl,
     cancelRun,
   }

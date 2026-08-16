@@ -1,4 +1,4 @@
-import { type FormEvent, useState } from 'react'
+import { type FormEvent, useCallback, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import AppShell from '../components/AppShell'
 import {
@@ -9,12 +9,14 @@ import {
   CapsLabel,
   cardClasses,
   FieldError,
+  FieldHelp,
   FieldLabel,
   Input,
   Spinner,
   Textarea,
 } from '../components/ui'
 import { useAgentRun } from '../hooks/useAgentRun'
+import { useDictation } from '../hooks/useDictation'
 import { api, ApiError } from '../lib/api'
 import { TERMINAL_RUN_STATUSES } from '../lib/agentTypes'
 import type { AgentRunStatus } from '../lib/agentTypes'
@@ -31,6 +33,11 @@ const STATUS_LABEL: Record<AgentRunStatus, string> = {
   cancelled: 'Cancelled',
 }
 
+// Not an AgentRunStatus: the row keeps whatever phase it was in, and the run
+// resumes there once the quota window reopens. It overrides the label only so
+// a minute of silence does not read as a hung run.
+const RATE_LIMIT_LABEL = 'Waiting for limit reset'
+
 const STATUS_BADGE: Record<AgentRunStatus, BadgeVariant> = {
   planning: 'pending',
   awaiting_confirm: 'pending',
@@ -43,6 +50,25 @@ const STATUS_BADGE: Record<AgentRunStatus, BadgeVariant> = {
   cancelled: 'pending',
 }
 
+function MicIcon() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className="size-4"
+      aria-hidden="true"
+    >
+      <rect x="9" y="2" width="6" height="11" rx="3" />
+      <path d="M5 10a7 7 0 0 0 14 0" />
+      <path d="M12 17v5" />
+    </svg>
+  )
+}
+
 /** Entry screen: describe the API in a sentence. Separate from the recorder
  * route, which stays untouched and is offered as the fallback below. */
 function PromptForm() {
@@ -51,8 +77,14 @@ function PromptForm() {
   const [error, setError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
 
+  const appendSpoken = useCallback((text: string) => {
+    setPrompt((current) => (current ? `${current.replace(/\s+$/, '')} ${text}` : text))
+  }, [])
+  const dictation = useDictation({ onFinal: appendSpoken })
+
   async function handleSubmit(e: FormEvent) {
     e.preventDefault()
+    dictation.stop()
     setError(null)
     setSubmitting(true)
     try {
@@ -81,14 +113,39 @@ function PromptForm() {
           {error && <p className="text-sm font-medium text-red-deep">{error}</p>}
           <div>
             <FieldLabel htmlFor="agent-prompt">What should it do?</FieldLabel>
-            <Textarea
-              id="agent-prompt"
-              required
-              rows={3}
-              value={prompt}
-              onChange={(e) => setPrompt(e.target.value)}
-              placeholder="e.g. make me an API to search for products on the Walton website"
-            />
+            <div className="relative">
+              <Textarea
+                id="agent-prompt"
+                required
+                rows={3}
+                // Interim words are shown appended so dictation reads live, but
+                // only the settled `prompt` is ever submitted.
+                value={dictation.interim ? `${prompt} ${dictation.interim}`.trim() : prompt}
+                onChange={(e) => setPrompt(e.target.value)}
+                className={dictation.supported ? 'pr-12' : ''}
+                placeholder="e.g. make me an API to search for products on the Walton website"
+              />
+              {dictation.supported && (
+                <button
+                  type="button"
+                  onClick={dictation.toggle}
+                  aria-pressed={dictation.listening}
+                  aria-label={dictation.listening ? 'Stop dictation' : 'Dictate your prompt'}
+                  title={dictation.listening ? 'Stop dictation' : 'Dictate your prompt'}
+                  className={`absolute bottom-2 right-2 grid size-9 place-items-center rounded-control bg-transparent transition focus-visible:outline-[3px] focus-visible:outline-ink focus-visible:outline-offset-2 ${
+                    dictation.listening
+                      ? 'animate-pulse text-orange'
+                      : 'text-ink/55 hover:text-ink'
+                  }`}
+                >
+                  <MicIcon />
+                </button>
+              )}
+            </div>
+            {dictation.listening && (
+              <FieldHelp>Listening… speak your request, then press the mic again.</FieldHelp>
+            )}
+            {dictation.error && <FieldError>{dictation.error}</FieldError>}
           </div>
           <Button type="submit" variant="primary" disabled={submitting} className="w-full justify-center">
             {submitting ? 'Starting…' : 'Build it'}
@@ -113,7 +170,8 @@ function PromptForm() {
 /** Progress screen: connects to an existing run and renders it through to a
  * terminal state. */
 function RunProgress({ runId }: { runId: string }) {
-  const { run, activity, checks, connectionError, confirmUrl, cancelRun } = useAgentRun(runId)
+  const { run, activity, checks, connectionError, rateLimited, confirmUrl, cancelRun } =
+    useAgentRun(runId)
   const [confirming, setConfirming] = useState(false)
   const [urlDraft, setUrlDraft] = useState<string | null>(null)
   const [urlError, setUrlError] = useState<string | null>(null)
@@ -153,6 +211,9 @@ function RunProgress({ runId }: { runId: string }) {
   }
 
   const running = !TERMINAL_RUN_STATUSES.has(run.status)
+  // Gated on `running` so a "waiting" event that arrives just as the run ends
+  // (or is left over after a reconnect) cannot label a finished run.
+  const waitingForLimit = rateLimited && running
   // The confirmation card carries its own "Cancel run" button, so the header
   // does not offer a second, differently-worded way to do the same thing.
   const canStop = running && run.status !== 'awaiting_confirm'
@@ -162,8 +223,11 @@ function RunProgress({ runId }: { runId: string }) {
       <div className={cardClasses({ variant: 'feature' })}>
         <div className="mb-3 flex items-center justify-between">
           <CapsLabel>Agent run</CapsLabel>
-          <Badge variant={STATUS_BADGE[run.status]} pulse={running}>
-            {STATUS_LABEL[run.status]}
+          <Badge
+            variant={waitingForLimit ? 'pending' : STATUS_BADGE[run.status]}
+            pulse={running}
+          >
+            {waitingForLimit ? RATE_LIMIT_LABEL : STATUS_LABEL[run.status]}
           </Badge>
         </div>
         <p className="text-ink/80">&ldquo;{run.prompt}&rdquo;</p>
